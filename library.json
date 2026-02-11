@@ -1,0 +1,24 @@
+{
+    "name": "DcMotorCore",
+    "version": "1.0.0",
+    "description": "Standardized DC motor driver management library for Open RC Core project.",
+    "keywords": "motor, driver, esp32",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/API-rep/DcMotorCore.git"
+    },
+    "authors": [
+        {
+            "name": "API",
+            "maintainer": true
+        }
+    ],
+    "dependencies": {
+        "common_defs": "https://github.com/API-rep/common_defs.git#v1.0.0"
+    },
+    "build": {
+        "includeDir": "src"
+    },
+    "frameworks": "arduino",
+    "platforms": "espressif32"
+}

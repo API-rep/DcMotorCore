@@ -1,0 +1,144 @@
+/******************************************************************************
+ * @file DcMotorCore.h
+ * @brief Universal DC motor controller interface using PWM.
+ * 
+ * Provides a high-level abstraction for H-Bridge motor drivers, supporting 
+ * Speed/Dir and Phase/Enable control modes. While optimized for hardware 
+ * PWM (LEDC), the architecture is designed for cross-platform compatibility.
+ * 
+ * ****************************************************************************/
+
+#pragma once
+
+#include <Arduino.h>
+#include <driver/ledc.h>
+#include <pin_defs.h> // Shared definitions library
+
+// =============================================================================
+// 1. ARCHITECTURE AND DEBUG CONFIGURATION
+// =============================================================================
+
+	// --- 1. Architecture Guard ---
+	// Currently restricted to ESP32 due to LEDC driver dependency.
+#if !defined(ESP32)
+	#error "DcMotorCore currently requires ESP32 LEDC hardware PWM."
+#endif
+
+	// --- 2. Debug Macros ---
+// #define DC_MOTOR_CORE_DEBUG
+#ifdef DC_MOTOR_CORE_DEBUG
+	#define DPRINT(...)    Serial.print(__VA_ARGS__)
+	#define DPRINTLN(...)  Serial.println(__VA_ARGS__)
+#else
+	#define DPRINT(...)
+	#define DPRINTLN(...)
+#endif
+
+// =============================================================================
+// 2. CONSTANTS AND ENUMERATIONS
+// =============================================================================
+
+	// --- 1. Functional Constants ---
+#define DEF_PWM_FREQ    400
+#define NOT_SET         -1
+
+#define CLOCKWISE       0
+#define COUNTERCLOCKWISE 1
+
+#define MIN_SPEED       0.00f
+#define MAX_SPEED       100.00f
+
+	/**
+	 * @brief Motor driver control interface type
+	 */
+enum class DriverControlMode : uint8_t {
+	SpeedDir = 0,    // PWM on Speed, Logic level on Dir
+	PhaseEnable = 1  // PWM on Enable, Logic level on Phase
+};
+
+// =============================================================================
+// 3. DC_MOTOR_CORE CLASS DEFINITION
+// =============================================================================
+
+class DcMotorCore {
+public:
+	DcMotorCore();
+
+	// --- 1. Hardware Assignment ---
+	bool useTimer(int8_t timer);
+	bool useChannel(int8_t channel);
+	bool attach(uint8_t pwmPin, int8_t dirPin = NOT_SET, uint32_t pwmFreq = DEF_PWM_FREQ);
+
+	// --- 2. Driver Configuration ---
+	bool setEnablePin(uint8_t enablePin, ActiveLevel mode);
+	bool setBreakPin(uint8_t breakPin, ActiveLevel mode);
+	bool setSleepPin(uint8_t sleepPin, ActiveLevel mode);
+	bool setMargin(uint8_t minMargin = (uint8_t)MIN_SPEED, uint8_t maxMargin = (uint8_t)MAX_SPEED);
+
+	// --- 3. Motion Control ---
+	bool runAtSpeed(float speed);
+	bool accelToSpeed(float speed, uint32_t accel);
+	void stop();
+	
+	// --- 4. Power and State Management ---
+	bool enable();
+	bool disable();
+	bool doBreak();
+	bool doNotBreak();
+	bool sleep();
+	bool doNotSleep();
+	bool wakeup();
+
+	// --- 5. Telemetry and Getters ---
+	float    getSpeed();
+	bool     isMoving();
+	bool     isBreaking();
+	bool     isSleeping();
+	int8_t   getPwmTimer();
+	uint32_t getPwmFreq();
+	uint32_t getMaxDutyVal();
+
+private:
+	// --- 1. Static Resource Management (Architecture specific) ---
+	static ledc_timer_config_t* _timers_config[LEDC_TIMER_MAX];
+	static uint8_t              _clients_for_timer[LEDC_TIMER_MAX];
+	static int8_t               _default_timer;
+	static bool                 _pwm_channel_used[LEDC_CHANNEL_MAX];
+
+	// --- 2. Instance Hardware Config ---
+	ledc_channel_config_t* _ledc_channel_config = nullptr;
+	int8_t      _dirPin     = NOT_SET;
+	int8_t      _enablePin  = NOT_SET;
+	int8_t      _breakPin   = NOT_SET;
+	int8_t      _sleepPin   = NOT_SET;
+
+	// --- 3. Active Levels (Polarity) ---
+	ActiveLevel _enablePinMode = ActiveLevel::ActiveHigh;
+	ActiveLevel _breakPinMode  = ActiveLevel::ActiveHigh;
+	ActiveLevel _sleepPinMode  = ActiveLevel::ActiveHigh;
+
+	// --- 4. Motion Properties ---
+	uint8_t     _minMargin      = (uint8_t)MIN_SPEED;
+	uint8_t     _maxMargin      = (uint8_t)MAX_SPEED;
+	bool        _marginAreSet   = false;
+	uint32_t    _accel_factor   = 0;
+
+	// --- 5. Internal PWM Properties ---
+	int8_t      _pwmTimer       = NOT_SET;
+	int8_t      _pwmChannel     = NOT_SET;
+	uint32_t    _pwmMaxDuty     = 0;
+
+	// --- 6. Internal Helpers ---
+	bool     accelIsValid(uint32_t accel);
+	bool     speedIsValid(float speed);
+	uint32_t speedToDuty(float speed);
+	float    dutyToSpeed(uint32_t duty);
+	float    speedInMargin(float speed);
+	float    revertMargedSpeed(float speed);
+	bool     dirPinFromSpeed(float speed);
+
+	static int  espSilentLog(const char* string, va_list args);
+	static int  _logHasOccured;
+};
+
+// EOF DcMotorCore.h
