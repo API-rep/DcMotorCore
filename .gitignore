@@ -1,0 +1,12 @@
+# --- PlatformIO Local Dev ---
+platformio.ini
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# --- VS Code specific ---
+.vscode/
+
+# --- Private Debug Folders ---
+.debug/
+

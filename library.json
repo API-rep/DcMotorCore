@@ -14,7 +14,7 @@
         }
     ],
     "dependencies": {
-        "common_defs": "https://github.com/API-rep/common_defs.git#v1.0.0"
+        "common_defs": "https://github.com/API-rep/common_defs.git"
     },
     "build": {
         "includeDir": "src"

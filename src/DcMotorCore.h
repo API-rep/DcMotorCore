@@ -11,6 +11,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <optional>
 #include <driver/ledc.h>
 #include <pin_defs.h> // Shared definitions library
 
@@ -45,8 +46,8 @@
 #define CLOCKWISE       0
 #define COUNTERCLOCKWISE 1
 
-#define MIN_SPEED       0.00f
-#define MAX_SPEED       100.00f
+static constexpr float MIN_SPEED = 0.00f;
+static constexpr float MAX_SPEED = 100.00f;
 
 	/**
 	 * @brief Motor driver control interface type
@@ -67,13 +68,13 @@ public:
 	// --- 1. Hardware Assignment ---
 	bool useTimer(int8_t timer);
 	bool useChannel(int8_t channel);
-	bool attach(uint8_t pwmPin, int8_t dirPin = NOT_SET, uint32_t pwmFreq = DEF_PWM_FREQ);
+	bool attach(uint8_t pwmPin, std::optional<int8_t> dirPin = std::nullopt, uint32_t pwmFreq = DEF_PWM_FREQ);
 
 	// --- 2. Driver Configuration ---
 	bool setEnablePin(uint8_t enablePin, ActiveLevel mode);
-	bool setBreakPin(uint8_t breakPin, ActiveLevel mode);
+	bool setDecayPin(uint8_t decayPin, DecayMode lowState, DecayMode highState);
 	bool setSleepPin(uint8_t sleepPin, ActiveLevel mode);
-	bool setMargin(uint8_t minMargin = (uint8_t)MIN_SPEED, uint8_t maxMargin = (uint8_t)MAX_SPEED);
+	bool setMargin(float minMargin = MIN_SPEED, float maxMargin = MAX_SPEED);
 
 	// --- 3. Motion Control ---
 	bool runAtSpeed(float speed);
@@ -83,16 +84,13 @@ public:
 	// --- 4. Power and State Management ---
 	bool enable();
 	bool disable();
-	bool doBreak();
-	bool doNotBreak();
 	bool sleep();
-	bool doNotSleep();
 	bool wakeup();
+	bool decayMode(DecayMode mode);
 
 	// --- 5. Telemetry and Getters ---
 	float    getSpeed();
 	bool     isMoving();
-	bool     isBreaking();
 	bool     isSleeping();
 	int8_t   getPwmTimer();
 	uint32_t getPwmFreq();
@@ -107,19 +105,20 @@ private:
 
 	// --- 2. Instance Hardware Config ---
 	ledc_channel_config_t* _ledc_channel_config = nullptr;
-	int8_t      _dirPin     = NOT_SET;
-	int8_t      _enablePin  = NOT_SET;
-	int8_t      _breakPin   = NOT_SET;
-	int8_t      _sleepPin   = NOT_SET;
+	std::optional<int8_t> _dirPin;
+	std::optional<int8_t>  _enablePin;
+	std::optional<int8_t>  _decayPin;
+	std::optional<int8_t>  _sleepPin;
 
 	// --- 3. Active Levels (Polarity) ---
 	ActiveLevel _enablePinMode = ActiveLevel::ActiveHigh;
-	ActiveLevel _breakPinMode  = ActiveLevel::ActiveHigh;
 	ActiveLevel _sleepPinMode  = ActiveLevel::ActiveHigh;
+	DecayMode _lowDecayPinMode = DecayMode::Unset; // Ce qui active le freinage
+	DecayMode _highDecayPinMode = DecayMode::Unset;  // Ce qui active la roue libre
 
 	// --- 4. Motion Properties ---
-	uint8_t     _minMargin      = (uint8_t)MIN_SPEED;
-	uint8_t     _maxMargin      = (uint8_t)MAX_SPEED;
+	float       _minMargin      = MIN_SPEED;
+	float       _maxMargin      = MAX_SPEED;
 	bool        _marginAreSet   = false;
 	uint32_t    _accel_factor   = 0;
 
@@ -136,6 +135,10 @@ private:
 	float    speedInMargin(float speed);
 	float    revertMargedSpeed(float speed);
 	bool     dirPinFromSpeed(float speed);
+
+	// --- 7. Input parameters validations ---
+	bool isSafeOutput(uint8_t pin);
+	bool isValidActiveLevel(ActiveLevel mode);
 
 	static int  espSilentLog(const char* string, va_list args);
 	static int  _logHasOccured;
