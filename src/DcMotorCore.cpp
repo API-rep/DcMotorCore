@@ -2,25 +2,21 @@
  * @file DcMotorCore.cpp
  * @brief Implementation of the universal DC motor controller.
  ******************************************************************************/
-
 #include "DcMotorCore.h"
 
-#include "Arduino.h"
-
-// #include "esp32-hal.h"
-// #include "soc/soc_caps.h"
-#include "driver/ledc.h"
+#include <Arduino.h>
+#include <driver/ledc.h>
 
 // =============================================================================
 // 1. STATIC MEMBER INITIALIZATION
 // =============================================================================
 
-ledc_timer_config_t *DcMotorCore::_timers_config[] = {NULL};	// init timers config pointers
+ledc_timer_config_t *DcMotorCore::_timers_config[] = {nullptr};	// init timers config pointers
 uint8_t	DcMotorCore::_clients_for_timer[] = {0};				// init timers clients channels counter
-int8_t	DcMotorCore::_default_timer = NOT_SET;
+int8_t	DcMotorCore::_default_timer = -1;
 bool	DcMotorCore::_pwm_channel_used[] = {0};				    // init channels usage log array
 
-int		DcMotorCore::_logHasOccure = NOT_SET;					// init espErr char counter attribute
+int		DcMotorCore::_logHasOccured = -1;					// init espErr char counter attribute
 
 
 // =============================================================================
@@ -34,21 +30,7 @@ int		DcMotorCore::_logHasOccure = NOT_SET;					// init espErr char counter attri
 
 DcMotorCore::DcMotorCore()
 {
-	_dirPin			   = NOT_SET;
-	_enablePin     = NOT_SET;
-	_enablePinMode = NOT_SET;
-	_sleepPin		   = NOT_SET;
-	_sleepPinMode	 = NOT_SET;
-	
-	_pwmTimer		   = NOT_SET;
-	_pwmChannel		 = NOT_SET;
-	_pwmMaxDuty		 = NOT_SET;
 
-
-
-	_minMargin		 = MIN_SPEED;
-	_maxMargin		 = MAX_SPEED;
-	_marginAreSet	 = false;
 }
 
 
@@ -67,295 +49,309 @@ DcMotorCore::DcMotorCore()
  */
 
 bool DcMotorCore::useTimer(int8_t timer) {
-	if (timer < 0 || timer >= LEDC_TIMER_MAX) return EXIT_FAILURE;
+		// --- 1. Range validation ---
+	if (timer < 0 || timer >= LEDC_TIMER_MAX) {
+		DPRINTLN("DcMotorCore: Invalid timer index provided.");
+		return false; // SUCRÉ: EXIT_FAILURE remplacé par false
+	}
+
+		// --- 2. Assignment ---
 	_pwmTimer = timer;
-	return EXIT_SUCCESS;
+	
+	return true; // SUCRÉ: EXIT_SUCCESS remplacé par true
 }
 
 
 
 /**
- * @brief Provide a specific channel for PWM signal
+ * @brief Provide a specific channel for PWM signal.
  * 
- * @details Use to set a specific channel for PWM signal. Can be used once and before
- *          attach() (will be ignore otherwise). Usefull to force PWM channel if a 
- *          conflict with anoter library is meet.
+ * @details Used to set a specific channel. Must be called before attach(). 
+ *          Useful to resolve conflicts with other libraries using LEDC.
  * 
- * @param	channel Channel to use for PWM signal (ledc : High speed timer 0-3)
+ * @param channel Channel to use for PWM (LEDC: 0-15).
  */
-
 bool DcMotorCore::useChannel(int8_t channel) {
-	if (channel < 0 || channel >= LEDC_CHANNEL_MAX) return EXIT_FAILURE;
+		// --- 1. Range validation ---
+	if (channel < 0 || channel >= LEDC_CHANNEL_MAX) {
+		DPRINTLN("DcMotorCore: Invalid channel index provided.");
+		return false;
+	}
+
+		// --- 2. Assignment ---
 	_pwmChannel = channel;
-	return EXIT_SUCCESS;
+	
+	return true;
+}
+
+
+
+bool DcMotorCore::setPwmFreq(uint32_t frequency) {
+		// --- 1. Lock check ---
+	if (isAttached() ) {
+		DPRINTLN("DcMotorCore Error: Use setPwmFreq() before attach() only. Command ignored.");
+		return false;
+	}
+
+		// --- 2. Temporary storage or direct update into DefaultPwmFreq ---
+	_pwmFreq = frequency; 
+	return true;
+}
 
 
 
 /**
- * @brief Attach motor to pins and configure hardware PWM
+ * @brief Attach motor to pins and configure hardware PWM.
  * 
- * @param	pwmPin Pin connected to motor driver PWM input
- * @param	dirPin Pin connected to motor driver direction pin
- * @param	pwmFreq Frequency of PWM output (= DEF_PWM_FREQ if not set)
- * 
- * NOTE: PWM selection had to be moved in a dedicated PWM manager lib
+ * @param pwmPin Pin connected to motor driver PWM input.
+ * @param dirPin Pin connected to motor driver direction pin (std::optional).
+ * @return true if configuration success, false otherwise.
  */
+bool DcMotorCore::attach(uint8_t pwmPin, std::optional<int8_t> dirPin) {
+		// --- 1. Lock check ---
+	if (isAttached()) return false;
 
-bool DcMotorCore::attach(uint8_t pwmPin, std::optional<int8_t> dirPin, uint32_t pwmFreq) {
+		// --- 2. Interface Management ---
+	_dirPin = dirPin;
 
-  	// --- 1. Interface Management ---
-  _dirPin = dirPin;
-
-  if (!_dirPin.has_value()) {
+	if (!_dirPin.has_value()) {
 			// CASE 1: PH/EN (Locked Anti-Phase)
-			// 0% speed is mapped to 50% hardware duty cycle
 		DPRINTLN("DcMotorCore: PH/EN mode (Locked Anti-Phase) selected.");
-  } 
-  else if (_dirPin.value() == -1) {
+	} 
+	else if (_dirPin.value() == -1) {
 			// CASE 2: Unidirectional
-			// 0-100% speed only, no physical direction pin used
-    DPRINTLN("DcMotorCore: Unidirectional mode selected.");
-  } 
-  else {
+		DPRINTLN("DcMotorCore: Unidirectional mode selected.");
+	} 
+	else {
 			// CASE 3: Standard SPEED/DIR
-			// Uses GPIO n for rotational direction control
-    if (!isSafeOutput(_dirPin.value())) return false;
-    pinMode(_dirPin.value(), OUTPUT);
-    DPRINT("DcMotorCore: Speed/Dir mode on GPIO "); DPRINTLN(_dirPin.value());
-  }
+		if (!isSafeOutput(_dirPin.value())) return false;
+		pinMode(_dirPin.value(), OUTPUT);
+		DPRINT("DcMotorCore: Speed/Dir mode on GPIO "); DPRINTLN(_dirPin.value());
+	}
 
+		// --- 3. PWM Pin Validation ---
+	if (!isSafeOutput(pwmPin)) return false;
 
-  	// --- 2. PWM Pin Validation ---
-  if (!isSafeOutput(pwmPin)) return false;
+		// --- 4. Resource Allocation ---
+	DPRINTLN("DcMotorCore: Setting up PWM signal generator...");
 
-	
-  	// --- 3. Resource Allocation (The Broker Transition) ---
-  	// Currently handled via internal static arrays.
-
-	DPRINTLN("Setting up PWM signal generator ...");
-		// setup PWM timer if not previously configured before attach()
-	if (_pwmTimer == NOT_SET) {																					DPRINTLN("  - PWM timer selection :");
-			// use default timer if no pwmFreq is provided and if default timer is already defined ...
-		if ((pwmFreq == 0) && (_default_timer != NOT_SET)) {													DPRINT("    -> No specific PWM frequency provided. Using previously configured timer "); DPRINT(_default_timer); DPRINTLN(" as default timer.");
-			_pwmTimer = _default_timer;
-		}
-			// ... or select a free PWM timer if available.
-		else {																									DPRINTLN("    -> Testing available timer");
-			for (uint8_t timer = 0; timer <= LEDC_TIMER_MAX; timer++)
-			{		// use first free timer ...
-				if (_clients_for_timer[timer] == 0) {															DPRINT("    -> Timer "); DPRINT(timer); DPRINTLN(" free. Using it for PWM signal.");
-					_pwmTimer = timer;
-					
-					break;
-				}
-					// ... or exit with error if no one are available
-				if (timer == (LEDC_TIMER_MAX - 1)) {															DPRINTLN("    -> No suitable free timer available. Abording configuration.");
-					return EXIT_FAILURE;
-				}
-			}
-			
-				// define default pwm_timer if not already set
-			if (_default_timer == NOT_SET) {
-					// set PWM frequency to default value if not provided
-				if (!pwmFreq) {																					DPRINTLN("    -> No frequency provided to configure timer. Using default value.");
-					pwmFreq = DEF_PWM_FREQ;
-				}
-					// set this timer as default timer
-				_default_timer = _pwmTimer;																		DPRINT("    -> Using this timer as default timer with "); DPRINT(pwmFreq); DPRINTLN(" Hz base frequency.");
-			}
-		}
+		// Setup PWM timer if not previously configured before attach()
+	if (_pwmTimer == -1) {
+		DPRINTLN("    -> Searching for a suitable PWM timer...");
 		
-			// create PWM timer config structure if not yet set
-		if (_timers_config[_pwmTimer] == NULL) {																DPRINT("  - Setting up timer "); DPRINT(_pwmTimer); DPRINTLN(" configuration.");
-			_timers_config[_pwmTimer] = new ledc_timer_config_t;				// create timer config structure
-			
-				// seeding timer config parameters 
-			_timers_config[_pwmTimer]->speed_mode	= LEDC_LOW_SPEED_MODE;		// set timer mode
-			_timers_config[_pwmTimer]->freq_hz		= pwmFreq;					// set frequency of PWM signal
-			_timers_config[_pwmTimer]->timer_num	= (ledc_timer_t)_pwmTimer;	// set timer index
-			_timers_config[_pwmTimer]->clk_cfg		= LEDC_AUTO_CLK;			// set LEDC source clock
-
-				// find max PWM resolution for pwmFreq
-			uint8_t resBit = LEDC_TIMER_BIT_MAX;								// max PWM resolution in bit
-
-				// redirect esp log to silent log function
-			esp_log_set_vprintf(&DcMotorCore::espSilentLog);
-																												DPRINTLN("    -> Computing PWM maximum bit resolution for frequency.");
- 			while ((resBit > 0) && (_logHasOccure != 0)) {
-					// reset silent log flag tracker
-				_logHasOccure = false;
-
-					// test timer with current resBit
-				_timers_config[_pwmTimer]->duty_resolution = (ledc_timer_bit_t)resBit;	// write resolution in timer config
-				ledc_timer_config(_timers_config[_pwmTimer]);							// try to start timer with current config. Return write to char_in_esp_error_log.
-  
-				resBit--;
-			}
-																												DPRINT("    -> Resolution of "); DPRINT(_timers_config[_pwmTimer]->duty_resolution); DPRINTLN(" bits found");
-				// reset silent log flag and restore esp log output tu UART0
-			_logHasOccure = NOT_SET;
-			esp_log_set_vprintf(&vprintf);
-
-			if (resBit <= 0) {																					DPRINTLN("    -> Unexpected error durring PWM timer config. Abording configuration.");
-					// free up memory and exit
-				delete _timers_config[_pwmTimer];
-				
-				return EXIT_FAILURE;
-			}
-		}
-	}
-	else {																										DPRINT("  - PWM timer specified by user. Using timer ");DPRINT(_pwmTimer); DPRINTLN(" for PWM signal");
-		// pwm timer set prior attach(). Statement for debug output.
-	}
-	
-	
-		// create PWM channel config structure
-	_ledc_channel_config = new ledc_channel_config_t;
-																												DPRINTLN("  - PWM channel selection :");
-		// auto select PWM channel if no pwmChannel is provided prior setup()
-	if (_pwmChannel == NOT_SET) {																				DPRINTLN("    -> No PWM channel specified. Auto-selecting a free one.");
-		for (uint8_t channel = 0; channel < LEDC_CHANNEL_MAX; channel++)
-		{		// use first free channel ...
-			if (_pwm_channel_used[channel] == false) {															DPRINT("      -> Channel "); DPRINT(channel); DPRINTLN(" free. Using it for PWM signal.");
-				_pwm_channel_used[channel] = true;
-				_pwmChannel = channel;
-				
+			// 1. First, look for a timer already running at the requested frequency
+		for (uint8_t t = 0; t < LEDC_TIMER_MAX; t++) {
+			if (_timers_config[t] != nullptr && _timers_config[t]->freq_hz == _pwmFreq) {
+				_pwmTimer = t;
+				DPRINT("    -> Found existing timer "); DPRINT(_pwmTimer); DPRINTLN(" with matching frequency.");
 				break;
 			}
-				// ... or exit with error if no one are available
-			if (channel == (LEDC_CHANNEL_MAX - 1)) {															DPRINTLN("      -> No suitable free channel available. Abording configuration.");
-					// free up memory and exit
-				delete _ledc_channel_config;
-				
-				if (_clients_for_timer[_pwmTimer] == 0) {
-					delete _timers_config[_pwmTimer];
+		}
+
+			// 2. If no matching frequency, find the first totally free timer
+		if (_pwmTimer == -1) {
+			for (uint8_t t = 0; t < LEDC_TIMER_MAX; t++) {
+				if (_clients_for_timer[t] == 0) {
+					_pwmTimer = t;
+					DPRINT("    -> Timer "); DPRINT(_pwmTimer); DPRINTLN(" is free. Selecting it.");
+					break;
 				}
-				
-				return EXIT_FAILURE;
+			}
+		}
+
+			// 3. Exit if no timers are available
+		if (_pwmTimer == -1) {
+			DPRINTLN("    -> Error: No free PWM timer available.");
+			return false;
+		}
+		
+			// 4. Create and configure hardware timer if it's new for this instance
+		if (_timers_config[_pwmTimer] == nullptr) {
+			DPRINT("    -> Configuring new hardware timer "); DPRINTLN(_pwmTimer);
+			_timers_config[_pwmTimer] = new ledc_timer_config_t;
+			
+			_timers_config[_pwmTimer]->speed_mode    = LEDC_LOW_SPEED_MODE;
+			_timers_config[_pwmTimer]->freq_hz       = _pwmFreq; 
+			_timers_config[_pwmTimer]->timer_num     = (ledc_timer_t)_pwmTimer;
+			_timers_config[_pwmTimer]->clk_cfg       = LEDC_AUTO_CLK;
+
+				// Automatic Resolution Detection
+			uint8_t resBit = LEDC_TIMER_BIT_MAX;
+			esp_log_set_vprintf(&DcMotorCore::espSilentLog);
+
+			while (resBit > 0) {
+				_logHasOccured = 0; 
+				_timers_config[_pwmTimer]->duty_resolution = (ledc_timer_bit_t)resBit;
+				if (ledc_timer_config(_timers_config[_pwmTimer]) == ESP_OK && _logHasOccured == 0) break; 
+				resBit--;
+			}
+			
+			DPRINT("    -> Auto-resolution set to: "); DPRINT((int)resBit); DPRINTLN(" bits.");
+			esp_log_set_vprintf(&vprintf); 
+
+			if (resBit <= 0) {
+				DPRINTLN("    -> Error: Failed to find valid PWM resolution.");
+				delete _timers_config[_pwmTimer];
+				_timers_config[_pwmTimer] = nullptr;
+				return false;
 			}
 		}
 	}
-	
-	else {																										DPRINT("    -> PWM channel specified by user. Using channel ");DPRINT(_pwmChannel); DPRINTLN(" for this PWM signal");
-		// pwm channel set prior attach(). Statement for debug output.
+
+		// --- 5. Channel Configuration ---
+	if (_pwmChannel == -1) {
+		for (uint8_t c = 0; c < LEDC_CHANNEL_MAX; c++) {
+			if (!_pwm_channel_used[c]) {
+				_pwm_channel_used[c] = true;
+				_pwmChannel = c;
+				DPRINT("    -> Auto-selected PWM channel "); DPRINTLN(_pwmChannel);
+				break;
+			}
+			if (c == (LEDC_CHANNEL_MAX - 1)) {
+				DPRINTLN("    -> Error: No free PWM channel available.");
+				return false;
+			}
+		}
 	}
-	
-		// seeding PWM channel config parameters 
-	_ledc_channel_config->channel				= (ledc_channel_t)_pwmChannel;
-	_ledc_channel_config->duty					= 0;
-	_ledc_channel_config->hpoint				= 0;
-	_ledc_channel_config->gpio_num				= pwmPin;
-	_ledc_channel_config->speed_mode			= LEDC_LOW_SPEED_MODE;
-	_ledc_channel_config->timer_sel				= (ledc_timer_t)_pwmTimer;
-	_ledc_channel_config->intr_type				= LEDC_INTR_DISABLE;
-	_ledc_channel_config->flags.output_invert 	= 0;
 
-		// start PWM signal on pwmPin.
-	ledc_channel_config(_ledc_channel_config);																	DPRINT("  - Starting PWM signal on pin "); DPRINTLN(pwmPin);
-																												DPRINTLN("PWM generator configuration success."); DPRINTLN();
-		// register this instance for PWM timer used.
+	_ledc_channel_config = new ledc_channel_config_t;
+	_ledc_channel_config->channel         = (ledc_channel_t)_pwmChannel;
+	_ledc_channel_config->duty            = 0;
+	_ledc_channel_config->hpoint          = 0;
+	_ledc_channel_config->gpio_num        = pwmPin;
+	_ledc_channel_config->speed_mode      = LEDC_LOW_SPEED_MODE;
+	_ledc_channel_config->timer_sel       = (ledc_timer_t)_pwmTimer;
+	_ledc_channel_config->intr_type       = LEDC_INTR_DISABLE;
+	_ledc_channel_config->flags.output_invert = 0;
+
+	if (ledc_channel_config(_ledc_channel_config) != ESP_OK) return false;
+
+		// --- 6. Finalize Instance ---
 	_clients_for_timer[_pwmTimer]++;
-	
-		// set ledc fade service on for ledc_set_duty_and_update/ledc_set_fade_time_and_start functions
 	ledc_fade_func_install(0);
-		
-		// set _pwmMaxDuty from duty bit resolution
 	_pwmMaxDuty = getMaxDutyVal();
+
+	uint32_t neutralDuty = speedToDuty(MinSpeed); // MinSpeed est 0.0f
+  ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel, neutralDuty, 0);
+
+  DPRINTLN("DcMotorCore: PWM initialized to neutral state.");
+
+	wakeup(); 
+
+	DPRINTLN("DcMotorCore: PWM configuration success.");
 	
-
-
-
-		// wake up driver if need
-	doNotSleep();
-
-	return EXIT_SUCCESS;
+	return true;
 }
 
 
 
+
 /**
- * @brief Set enable pin and its active level
+ * @brief Enable pin setup
  * 
- * @details Configure motor driver enable pin if available (i.e. in Phase/enable mode)
+ * @details Configure the motor driver enable pin and its active level (active high or active low).
  * 
  * @param	enablePin Pin connected to motor driver enable input
  * @param	mode Pin mode (active high or active low)
  */
 
 bool DcMotorCore::setEnablePin(uint8_t enablePin, ActiveLevel mode) {
-	DPRINTLN("DcMotorCore: Enable pin configuration:");
+		DPRINTLN("DcMotorCore: Enable pin configuration:");
 
-		// --- 1. Input parameters validation ---
+		// --- 1. Lock check ---
+	if (isAttached()) {
+		DPRINTLN("DcMotorCore Error: Cannot change Enable pin after attach().");
+		return false;
+	}
+
+		// --- 2. Input parameters validation ---
 	if (!isSafeOutput(enablePin) || !isValidActiveLevel(mode)) {
 		DPRINTLN("    -> Invalid Enable Pin or ActiveLevel mode. Configuration aborted.");
 		return false;
 	}
 
-		// --- 2. Configuration ---
+		// --- 3. Configuration ---
 	_enablePin = enablePin; // Automatically wrapped into std::optional
 	_enablePinMode = mode;
 
 	pinMode(_enablePin.value(), OUTPUT);
 	DPRINT("    -> Enable pin attached to pin "); DPRINTLN(_enablePin.value());
 
-	// --- 3. Initial state: Set to disabled for safety ---
+		// --- 4. Initial state: Set to disabled for safety ---
 	return disable();
 }
 
 
 
 /**
- * @brief Configure decay pin and modes for each electrical state.
+ * @brief Decay pin setup
+ * 
+ * @details Configure the motor driver decay pin and its active levels for HIGH and LOW states.
  * 
  * @param decayPin Pin connected to motor driver decay input
  * @param lowState Decay mode mode when pin is LOW
  * @param highState Decay mode when pin is HIGH
  */
 bool DcMotorCore::setDecayPin(uint8_t decayPin, DecayMode lowState, DecayMode highState) {
-	DPRINTLN("DcMotorCore: Decay pin configuration:");
+		DPRINTLN("DcMotorCore: Decay pin configuration:");
 
-		// --- 1. Safety check ---
+		// --- 1. Lock check ---
+	if (isAttached()) {
+		DPRINTLN("DcMotorCore Error: Cannot change Decay pin after attach().");
+		return false;
+	}
+
+		// --- 2. Safety check ---
 	if (!isSafeOutput(decayPin)) {
 		DPRINTLN("    -> Invalid Decay Pin. Configuration aborted.");
 		return false;
 	}
 
-		// --- 2. Assignment ---
-	_decayPin = decayPin; // Wrapped into std::optional
-	_lowDecayPinMode = lowState;
-	_highDecayPinMode = highState;
+		// --- 3. Configuration and Assignment ---
+	_decayPin = decayPin; // Automatically wrapped into std::optional
+	_decayLowPinMode = lowState;
+	_decayHighPinMode = highState;
 
 	pinMode(_decayPin.value(), OUTPUT);
 	DPRINT("    -> Decay pin attached to pin "); DPRINTLN(_decayPin.value());
 
-		// --- 3. Initial state: Set to the mode defined for the LOW state ---
-	return decayMode(_lowDecayPinMode);
+		// --- 4. Initial state: Apply mode defined for the LOW state ---
+	return decayMode(_decayLowPinMode);
 }
 
 
 
 /**
- * @brief Configure the motor driver sleep pin and its active level.
+ * @brief Sleep pin setup
  * 
- * @details Used to put the driver into low-power mode or wake it up.
+ * @details Configure the motor driver sleep pin and its active level (active high or active low).
+ * 
+ * @param	sleepPin Pin connected to motor driver sleep input
+ * @param	mode Pin mode (active high or active low)
  */
 bool DcMotorCore::setSleepPin(uint8_t sleepPin, ActiveLevel mode) {
-	DPRINTLN("DcMotorCore: Sleep pin configuration:");
+		DPRINTLN("DcMotorCore: Sleep pin configuration:");
 
-		// --- 1. Input parameters validation ---
+		// --- 1. Lock check ---
+	if (isAttached()) {
+		DPRINTLN("DcMotorCore Error: Cannot change Sleep pin after attach().");
+		return false;
+	}
+
+		// --- 2. Input parameters validation ---
 	if (!isSafeOutput(sleepPin) || !isValidActiveLevel(mode)) {
 		DPRINTLN("    -> Invalid Sleep Pin or ActiveLevel mode. Configuration aborted.");
 		return false;
 	}
 
-		// --- 2. Configuration ---
-	_sleepPin = sleepPin; // Wrapped into std::optional
+		// --- 3. Configuration ---
+	_sleepPin = sleepPin; // Automatically wrapped into std::optional
 	_sleepPinMode = mode;
 
 	pinMode(_sleepPin.value(), OUTPUT);
 	DPRINT("    -> Sleep pin attached to pin "); DPRINTLN(_sleepPin.value());
 
-		// --- 3. Initial state: Force sleep for maximum safety ---
+		// --- 4. Initial state: Force sleep for maximum safety ---
 	return sleep();
 }
 
@@ -370,105 +366,154 @@ bool DcMotorCore::setSleepPin(uint8_t sleepPin, ActiveLevel mode) {
  */
 
 bool DcMotorCore::setMargin(float minMargin, float maxMargin) {
-	DPRINTLN("DcMotorCore: Setting up margins...");
+		DPRINTLN("DcMotorCore: Setting up margins...");
 
+		// --- 1. Lock check ---
+	if (isAttached()) {
+		DPRINTLN("DcMotorCore Error: Cannot change margins after attach().");
+		return false;
+	}
+	
+		// --- 2. Validation with safety gap ---
 	const float safetyGap = 10.0f;
-		// --- 1. Validation with safety gap ---
-	if (minMargin >= MIN_SPEED && 
-	    maxMargin <= MAX_SPEED && 
+	
+	if (minMargin >= MinSpeed && 
+	    maxMargin <= MaxSpeed && 
 	    (maxMargin - minMargin) >= safetyGap) {
 
 		_minMargin = minMargin;
 		_maxMargin = maxMargin;
 
-		// --- 2. Smart flag switching ---
-		// If margins are at absolute limits, we disable the mapping logic to save CPU
-		_marginAreSet = !(_minMargin == MIN_SPEED && _maxMargin == MAX_SPEED);
+		// --- 3. Smart flag switching ---
+		// If margins are at absolute limits, we disable mapping logic to save CPU
+		_marginAreSet = !(_minMargin == MinSpeed && _maxMargin == MaxSpeed);
 
-		DPRINT("    -> Margins updated. Active: "); DPRINTLN(_marginAreSet ? "YES" : "NO (Default)");
+		DPRINT("    -> Margins updated. Active: "); 
+		DPRINTLN(_marginAreSet ? "YES" : "NO (Default)");
 		
 		return true;
 	}
 
-	DPRINTLN("    -> Error: Invalid margin range or gap too small.");
+		DPRINTLN("    -> Error: Invalid margin range or gap too small.");
 	return false;
 }
 
 
 
 /**
- * @brief Set motor speed in percent
- * 
- * @param speed Target speed value (-100.0 to 100.0)
- * @return true if speed was set, false if value was invalid
+ * @brief Invert the motor rotation logic relative to the CEI standard.
  */
+void DcMotorCore::setInverted(bool invert) {
+		// --- 1. Lock check ---
+	if (isAttached()) {
+		DPRINTLN("DcMotorCore Error: Cannot invert rotation logic after attach().");
+		return;
+	}
 
+		// --- 2. Assignment ---
+	_isInverted = invert;
+	DPRINT("DcMotorCore: Rotation logic inverted: "); 
+	DPRINTLN(_isInverted ? "YES" : "NO");
+}
+
+
+
+
+/**
+ * @brief Set motor speed in percent (-100.0 to 100.0).
+ * 
+ * @param speed Target speed value.
+ * @return true if speed was set, false if value was invalid or hardware error.
+ */
 bool DcMotorCore::runAtSpeed(float speed) {
-	DPRINTLN("DcMotorCore: Setting motor speed.");
+		DPRINTLN("DcMotorCore: Setting motor speed.");
 
-		// --- 1. Validation ---
+		// --- 1. Logical Inversion ---
+	if (_isInverted) speed = -speed; 
+
+		// --- 2. Validation ---
 	if (speedIsValid(speed)) {
 		
-			// --- 2. Margin Mapping ---
-			// We use the internal helper which already checks _marginAreSet
+			// --- 3. Margin Mapping ---
+			// Internal helper automatically handles the _marginAreSet logic
 		float mappedSpeed = speedInMargin(speed);
 
-			// --- 3. Direction management ---
+			// --- 4. Direction management ---
+			// Sets the physical DIR pin state if defined
 		dirPinFromSpeed(mappedSpeed);
 
-			// --- 4. PWM Duty Cycle calculation ---
+			// --- 5. PWM Duty Cycle calculation ---
+			// Handles both standard and Locked Anti-Phase (PH/EN) modes
 		uint32_t duty = speedToDuty(mappedSpeed);
 
-			// --- 5. Hardware Update ---
-			// Note: Most ESP32 Arduino cores use LEDC_LOW_SPEED_MODE for all channels
-			// ledc_set_duty_and_update is a fast way to apply changes
+			// --- 6. Hardware Update ---
+			// We use LEDC_LOW_SPEED_MODE for maximum compatibility across ESP32 variants
 		if (ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel, duty, 0) == ESP_OK) {
 			return true;
 		}
 	}
 
-	DPRINTLN("  DcMotorCore: Speed setting aborted.");
+		DPRINTLN("  DcMotorCore: Speed setting aborted.");
 	return false;
 }
 
 
 
-/////////////////////////////////////////////////////////////////////////////////////
-/*	accelToSpeed(speed, accel) - set motor speed with acceleration
-/		float speed: motor speed in % (0-100%)
-/		uint32_t accel: acceleration in ms per speed %                             */
-/////////////////////////////////////////////////////////////////////////////////////
-bool DcMotorCore::accelToSpeed(float targetSpeed, uint32_t accel)
-{																												DPRINTLN("Setting speed with acceleration.");
-		// set speed if provide speed is valid
-	if(speedIsValid(targetSpeed) == EXIT_SUCCESS && accelIsValid(accel) == EXIT_SUCCESS) {
-			// map speed into custom margin if set 
-		if (_marginAreSet) {
-			targetSpeed = speedInMargin(targetSpeed);
-		}
-			// set _dirPin direction (if defined) from speed.
-		dirPinFromSpeed(targetSpeed);
+/**
+ * @brief Set motor speed with hardware-assisted acceleration (Fade).
+ * 
+ * @details Gradually change the motor speed to the target value using harware PWM fading.
+ *          Acceleration time is determined by the accel parameter in ...
+ */
+bool DcMotorCore::accelToSpeed(float targetSpeed, uint32_t accel) {
+		DPRINTLN("DcMotorCore: Setting speed with acceleration.");
 
-			// check acceleration factor to avoid negative value underflow
-		uint32_t currentDuty = ledc_get_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel);				DPRINT("currentDuty is : "); DPRINTLN(currentDuty);
-		uint32_t target_duty = speedToDuty(targetSpeed);														DPRINT("target_duty is : "); DPRINTLN(target_duty);
-		uint32_t fadeInDuty = 0; 
-		
-			// speed decrease
-		if (max(currentDuty, target_duty) == target_duty) {														DPRINTLN("Increasing speed : ");
-			fadeInDuty = target_duty - currentDuty;																DPRINT("fadeInDuty is : "); DPRINTLN(fadeInDuty);
-		}
-			// speed increase
-		else {																									DPRINTLN("Decreasing speed : ");
-			fadeInDuty = currentDuty - target_duty;																DPRINT("fadeInDuty is : "); DPRINTLN(fadeInDuty);
-		}
+		// --- 1. Logical Inversion ---
+	if (_isInverted) targetSpeed = -targetSpeed;
 
-		uint32_t max_fade_time_ms = ((fadeInDuty * accel * 100) / _pwmMaxDuty);									DPRINT("max_fade_time_ms is : "); DPRINTLN(max_fade_time_ms);
-		ledc_set_fade_time_and_start(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel, target_duty, max_fade_time_ms, LEDC_FADE_NO_WAIT);
-
-		return EXIT_SUCCESS;
+		// --- 1. Parameters validation ---
+	if (!speedIsValid(targetSpeed) || !accelIsValid(accel)) {
+		DPRINTLN("    -> Acceleration setup aborted: invalid parameters.");
+		return false; 
 	}
-	return EXIT_FAILURE;
+
+
+		// --- 2. Target speed preparation ---
+	float mappedTarget = speedInMargin(targetSpeed);
+	dirPinFromSpeed(mappedTarget);
+	uint32_t targetDuty = speedToDuty(mappedTarget);
+
+
+		// --- 3. Hardware state acquisition and Fade Calculation ---
+		// 3.1 Capture current duty BEFORE stopping the fade
+	uint32_t currentDuty = ledc_get_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel);
+	
+		// 3.2 Stop any ongoing fade by forcing current duty immediately
+	ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel, currentDuty, 0);
+
+		// 3.3 Calculate the absolute difference (delta)
+	uint32_t deltaDuty = (currentDuty > targetDuty) ? (currentDuty - targetDuty) : (targetDuty - currentDuty);
+
+		// 3.4 Calculate the fade time based on the acceleration factor
+	uint32_t fadeTimeMs = (uint32_t)((deltaDuty * accel * 100.0f) / _pwmMaxDuty);
+
+
+		// --- 4. Hardware execution ---
+	esp_err_t result = ledc_set_fade_time_and_start(
+		LEDC_LOW_SPEED_MODE, 
+		(ledc_channel_t)_pwmChannel, 
+		targetDuty, 
+		fadeTimeMs, 
+		LEDC_FADE_NO_WAIT
+	);
+
+	if (result == ESP_OK) {
+		DPRINT("    -> Acceleration started: "); DPRINT(fadeTimeMs); DPRINTLN(" ms transition.");
+		return true;
+	}
+
+	DPRINTLN("    -> Hardware error during fade initialization.");
+	return false;
 }
 
 
@@ -478,41 +523,50 @@ bool DcMotorCore::accelToSpeed(float targetSpeed, uint32_t accel)
  */
 
 void DcMotorCore::stop() {
-	DPRINTLN("DcMotorCore: Motor stopped.");
+		DPRINTLN("DcMotorCore: Motor stopped.");
 
 		// --- 1. Interruption of any ongoing hardware fade ---
-		// Ensures that the speed 0 command is not ignored by the PWM peripheral
-	ledc_fade_stop(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel);
+	uint32_t currentDuty = ledc_get_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel);
+	ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel, currentDuty, 0);
 
 		// --- 2. Force speed to minimum ---
-	runAtSpeed(MIN_SPEED);
+	runAtSpeed(MinSpeed);
 }
 
 
 
 /**
- * @brief Apply the requested decay mode based on hardware mapping.
+ * @brief Set decay mode based on hardware mapping.
+ * 
+ * @details This function sets the decay mode by writing to the physical pin according to the mapping defined in setDecayPin().
+ *          It abstracts the user from the actual pin state required for each mode, allowing them to simply request the desired decay behavior.
+ * @param mode Desired decay mode (SlowDecay for braking, FastDecay for coasting ...).
+ * @return true if the decay mode was successfully set, false if there was an error (e.g., pin not defined or mode not supported by hardware).
  */
 
 bool DcMotorCore::decayMode(DecayMode mode) {
-	if (_decayPin == NOT_SET || mode == DecayMode::Unset) {
+		// --- 1. Validation ---
+		// Check if pin is defined and if requested mode is functional
+	if (!_decayPin.has_value() || mode == DecayMode::Unset) {
 		DPRINTLN("DcMotorCore: Decay command ignored (pin not set or Unset mode).");
 		return false;
 	}
 
-		// --- 1. Map intent to physical state ---
-	if (mode == _lowDecayPinMode) {
-		digitalWrite(_decayPin, LOW);
+		// --- 2. Map intent to physical state ---
+		// Compare requested mode with our defined truth table for LOW and HIGH states
+	if (mode == _decayLowPinMode) {
+		digitalWrite(_decayPin.value(), LOW);
 	} 
-	else if (mode == _highDecayPinMode) {
-		digitalWrite(_decayPin, HIGH);
+	else if (mode == _decayHighPinMode) {
+		digitalWrite(_decayPin.value(), HIGH);
 	} 
 	else {
 		DPRINTLN("DcMotorCore: Requested mode not supported by this hardware.");
 		return false;
 	}
 
-	DPRINT("DcMotorCore: Decay mode set to "); DPRINTLN((mode == DecayMode::SlowDecay) ? "SLOW" : "FAST");
+	DPRINT("DcMotorCore: Decay mode set to "); 
+	DPRINTLN((mode == DecayMode::SlowDecay) ? "SLOW (Brake)" : "FAST (Coast)");
 	
 	return true;
 }
@@ -523,17 +577,19 @@ bool DcMotorCore::decayMode(DecayMode mode) {
 /**
  * @brief Get the current decay mode by reading the physical pin state.
  */
+DecayMode DcMotorCore::getDecayMode() {
+		// --- 1. Safety check ---
+	if (!_decayPin.has_value()) {
+		return DecayMode::Unset;
+	}
 
-DecayMode DcMotorCore::decayMode() {
-	if (_decayPin == NOT_SET) return DecayMode::Unset;
-
-	// --- 1. Read physical pin and match with the mapping ---
-	if (digitalRead(_decayPin) == LOW) {
-		return _lowDecayPinMode;
+		// --- 2. Read physical pin and match with the mapping ---
+	if (digitalRead(_decayPin.value()) == LOW) {
+		return _decayLowPinMode;
 	} 
 	
 	else {
-		return _highDecayPinMode;
+		return _decayHighPinMode;
 	}
 }
 
@@ -542,15 +598,15 @@ DecayMode DcMotorCore::decayMode() {
 /**
  * @brief Enable the motor driver output.
  */
-
 bool DcMotorCore::enable() {
-	if (_enablePin == NOT_SET) {
+		// --- 1. Safety check ---
+	if (!_enablePin.has_value()) {
 		DPRINTLN("DcMotorCore: Enable pin not set, command ignored.");
 		return false;
 	}
 
-		// Set pin state based on ActiveLevel
-	digitalWrite(_enablePin, (_enablePinMode == ActiveLevel::ActiveHigh) ? HIGH : LOW);
+		// --- 2. Set pin state based on ActiveLevel configuration ---
+	digitalWrite(_enablePin.value(), (_enablePinMode == ActiveLevel::ActiveHigh) ? HIGH : LOW);
 	DPRINTLN("DcMotorCore: Driver enabled.");
 
 	return true;
@@ -561,15 +617,15 @@ bool DcMotorCore::enable() {
 /**
  * @brief Disable the motor driver output.
  */
-
 bool DcMotorCore::disable() {
-	if (_enablePin == NOT_SET) {
+		// --- 1. Safety check ---
+	if (!_enablePin.has_value()) {
 		DPRINTLN("DcMotorCore: Disable pin not set, command ignored.");
 		return false;
 	}
 	
-		// Set pin state to inactive
-	digitalWrite(_enablePin, (_enablePinMode == ActiveLevel::ActiveHigh) ? LOW : HIGH);
+		// --- 2. Set pin state to inactive ---
+	digitalWrite(_enablePin.value(), (_enablePinMode == ActiveLevel::ActiveHigh) ? LOW : HIGH);
 	DPRINTLN("DcMotorCore: Driver disabled.");
 
 	return true;
@@ -580,15 +636,15 @@ bool DcMotorCore::disable() {
 /**
  * @brief Put the motor driver into sleep mode.
  */
-
 bool DcMotorCore::sleep() {
-	if (_sleepPin == NOT_SET) {
+		// --- 1. Safety check ---
+	if (!_sleepPin.has_value()) {
 		DPRINTLN("DcMotorCore: Sleep pin not set, command ignored.");
 		return false;
 	}
 
-		// Set pin state to sleep (opposite of ActiveLevel logic)
-	digitalWrite(_sleepPin, (_sleepPinMode == ActiveLevel::ActiveHigh) ? LOW : HIGH);
+		// --- 2. Set pin state to sleep ---
+	digitalWrite(_sleepPin.value(), (_sleepPinMode == ActiveLevel::ActiveHigh) ? LOW : HIGH);
 	DPRINTLN("DcMotorCore: Driver is now sleeping.");
 
 	return true;
@@ -600,15 +656,15 @@ bool DcMotorCore::sleep() {
 /**
  * @brief Wakeup the motor driver from sleep mode.
  */
-
 bool DcMotorCore::wakeup() {
-	if (_sleepPin == NOT_SET) {
+		// --- 1. Safety check ---
+	if (!_sleepPin.has_value()) {
 		DPRINTLN("DcMotorCore: Wakeup pin not set, command ignored.");
 		return false;
 	}
 
-		// Set pin state to active
-	digitalWrite(_sleepPin, (_sleepPinMode == ActiveLevel::ActiveHigh) ? HIGH : LOW);
+		// --- 2. Set pin state to active ---
+	digitalWrite(_sleepPin.value(), (_sleepPinMode == ActiveLevel::ActiveHigh) ? HIGH : LOW);
 	DPRINTLN("DcMotorCore: Driver is now awake.");
 
 	return true;
@@ -621,40 +677,46 @@ bool DcMotorCore::wakeup() {
  */
 float DcMotorCore::getSpeed() {
 		// --- 1. Safety check ---
-	if (_ledc_channel_config == nullptr || _pwmTimer == NOT_SET) {
+	if (_ledc_channel_config == nullptr || _pwmTimer == -1) {
 		DPRINTLN("DcMotorCore Error: getSpeed() called before attach() or timer init.");
 		return 0.0f;
 	}
 
 		// --- 2. Get raw speed from hardware duty cycle ---
-	uint32_t currentDuty = ledc_get_duty(_timers_config[_pwmTimer]->speed_mode, _ledc_channel_config->channel);
+		// Direct hardware query to get current PWM duty
+	uint32_t currentDuty = ledc_get_duty(LEDC_LOW_SPEED_MODE, _ledc_channel_config->channel);
 	float speed = dutyToSpeed(currentDuty);
 	
 	DPRINT("DcMotorCore: Raw speed from duty cycle: "); DPRINTLN(speed);
 
 		// --- 3. Revert margin mapping ---
-		// revertMargedSpeed internally handles the _marginAreSet check
+		// Handles dead-zone compensation logic internally
 	speed = revertMargedSpeed(speed);
 
-		// --- 4. Determine direction with ternary operator ---
-		// If no dirPin, return raw speed. Otherwise, check physical pin state.
-	if (_dirPin == NOT_SET) return speed;
+		// --- 4. Determine direction and apply inversion flag ---
+		// For PH/EN mode, dutyToSpeed already provides the signed speed
+	if (!_dirPin.has_value() || _dirPin.value() == -1) {
+		return _isInverted ? -speed : speed;
+	}
 
-	return (digitalRead(_dirPin) == CLOCKWISE) ? speed : -speed;
+		// For Speed/Dir mode, we map the physical pin state (HIGH = Positive)
+	float finalSpeed = (digitalRead(_dirPin.value()) == HIGH) ? speed : -speed;
+
+		// Apply the logical inversion flag (CEI standard vs Reversed)
+	return _isInverted ? -finalSpeed : finalSpeed;
 }
-
 
 
 
 /**
  * @brief Check if the motor is currently moving.
  * 
- * @return true if current speed is different from MIN_SPEED.
+ * @return true if current speed is different from MinSpeed.
  */
 bool DcMotorCore::isMoving() {
 	// --- 1. Velocity check ---
-	// Since getSpeed() returns a float, we compare against our MIN_SPEED constant
-	if (getSpeed() != MIN_SPEED) {
+	// Since getSpeed() returns a float, we compare against our MinSpeed constant
+	if (getSpeed() != MinSpeed) {
 		return true;
 	}
 
@@ -663,60 +725,75 @@ bool DcMotorCore::isMoving() {
 }
 
 
+
 /**
  * @brief Check if the motor driver is currently in sleep mode.
+ * 
+ * @return true if sleep pin is active, false if not defined or inactive.
  */
 bool DcMotorCore::isSleeping() {
-	// --- 1. Safety check ---
+		// --- 1. Safety check ---
 	if (!_sleepPin.has_value()) {
 		return false;
 	}
 
-	// --- 2. Logic check ---
-	// Read the physical pin and compare with the defined Sleep polarity.
-	// Since wakeup() sets it to ActiveLevel, sleep is the opposite.
+		// --- 2. Logic check ---
 	uint8_t sleepState = (_sleepPinMode == ActiveLevel::ActiveHigh) ? LOW : HIGH;
 
 	return (digitalRead(_sleepPin.value()) == sleepState);
 }
 
-/////////////////////////////////////////////////////////////////////////////////////
-/*	getPwmTimer() - Return the PWM timer (0-3) use by PWM signal or -1 if not set  */
-/////////////////////////////////////////////////////////////////////////////////////
-int8_t DcMotorCore::getPwmTimer()
-{		// check if PWM is configured and return timer ...
-	if (_ledc_channel_config != NULL) {
 
-		return _ledc_channel_config->timer_sel;
+
+/**
+ * @brief Return the PWM timer index (0-3) used by the motor.
+ * 
+ * @return Timer index or -1 if not yet configured.
+ */
+int8_t DcMotorCore::getPwmTimer() {
+		// --- 1. Check hardware configuration state ---
+	if (_ledc_channel_config != nullptr) {
+		return (int8_t)_ledc_channel_config->timer_sel;
 	}
-		// ... or return NOT_SET if not configured
-	return NOT_SET;
+
+		// --- 2. Return -1 if not configured ---
+	return -1;
 }
 
-/////////////////////////////////////////////////////////////////////////////////////
-/*	getPwmFreq() - Return the frequency of the PWM signal                          */
-/////////////////////////////////////////////////////////////////////////////////////
-uint32_t DcMotorCore::getPwmFreq()
-{		// check if PWM is configured and return frequency ...
-	if (_ledc_channel_config != NULL) {
+
+
+/**
+ * @brief Return the frequency of the PWM signal in Hz.
+ * 
+ * @return Frequency or 0xFFFFFFFF if not configured.
+ */
+uint32_t DcMotorCore::getPwmFreq() {
+		// --- 1. Check if PWM is configured ---
+	if (_ledc_channel_config != nullptr && _pwmTimer != -1) {
 		return ledc_get_freq(LEDC_LOW_SPEED_MODE, (ledc_timer_t)_pwmTimer);
 	}
-		// ... or error code if not configured
-	return -1;
+
+		// --- 2. Return error code if not configured ---
+	return false;
 }
 
-/////////////////////////////////////////////////////////////////////////////////////
-/*	getMaxDutyVal() - Return the maximum value of PWM duty cycle                   */
-/////////////////////////////////////////////////////////////////////////////////////
-uint32_t DcMotorCore::getMaxDutyVal()
-{		// check if PWM is configured and return frequency ...
-	if (_ledc_channel_config != NULL) {
-		uint8_t duty_resolution = _timers_config[_pwmTimer]->duty_resolution;
+
+
+
+/**
+ * @brief Return the maximum value of PWM duty cycle based on resolution.
+ */
+uint32_t DcMotorCore::getMaxDutyVal() {
+		// --- 1. Check if PWM is configured ---
+	if (_ledc_channel_config != nullptr && _pwmTimer != -1) {
+		uint8_t res = _timers_config[_pwmTimer]->duty_resolution;
 		
-		return (pow(2,duty_resolution) - 1);
+		// Logic: 2^res - 1 using bit shifting for performance
+		return (uint32_t)((1 << res) - 1);
 	}
-		// ... or return error code if not configured
-	return -1;
+
+		// --- 2. Return error code if not configured ---
+	return 0xFFFFFFFF;
 }
 
 
@@ -725,7 +802,7 @@ uint32_t DcMotorCore::getMaxDutyVal()
  * @brief Verify if the acceleration factor will cause a mathematical overflow.
  */
 bool DcMotorCore::accelIsValid(uint32_t accel) {
-	DPRINTLN("DcMotorCore: Checking acceleration factor.");
+		DPRINTLN("DcMotorCore: Checking acceleration factor.");
 
 		// --- 1. Constant for uint32_t maximum value ---
 	const uint32_t uint32Max = std::numeric_limits<uint32_t>::max();
@@ -736,8 +813,8 @@ bool DcMotorCore::accelIsValid(uint32_t accel) {
 		return true;
 	}
 
-	DPRINT("    -> Error: Acceleration factor too large. Maximum allowed: "); 
-	DPRINTLN(uint32Max / (100 * _pwmMaxDuty));
+		DPRINT("    -> Error: Acceleration factor too large. Maximum allowed: "); 
+		DPRINTLN(uint32Max / (100 * _pwmMaxDuty));
 
 	return false;
 }
@@ -748,17 +825,21 @@ bool DcMotorCore::accelIsValid(uint32_t accel) {
  * @brief Verify if the provided speed is within authorized bounds.
  */
 bool DcMotorCore::speedIsValid(float speed) {
-	// --- 1. Range validation ---
-	// Checks if speed is between -100.0 and 100.0
-	if (speed >= -MAX_SPEED && speed <= MAX_SPEED) {
-		return true;
+		// --- 1. General range validation (-100.0 to 100.0) ---
+	if (speed < -MaxSpeed || speed > MaxSpeed) {
+		DPRINT("DcMotorCore: Speed out of bounds: "); DPRINTLN(speed);
+		return false;
 	}
 
-	DPRINT("DcMotorCore: Invalid speed requested: "); DPRINTLN(speed);
-	DPRINT("    -> Must be between "); DPRINT( -MAX_SPEED); 
-	DPRINT(" and "); DPRINTLN(MAX_SPEED);
+		// --- 2. Unidirectional safety check ---
+		// If _dirPin is explicitly set to -1, we only allow positive speeds or zero.
+	if (_dirPin.has_value() && _dirPin.value() == -1 && speed < MinSpeed) {
+		DPRINTLN("DcMotorCore: Negative speed rejected for unidirectional motor.");
+		return false;
+	}
 
-	return false;
+		// --- 3. Speed is valid for current hardware configuration ---
+	return true;
 }
 
 
@@ -768,19 +849,21 @@ bool DcMotorCore::speedIsValid(float speed) {
  * @brief Convert normalized speed (-100.0 to 100.0) to PWM duty cycle.
  */
 uint32_t DcMotorCore::speedToDuty(float speed) {
-		// --- Case 1: Phase/enable mode ---
-		// duty = max_duty * ((speed + 100) / 200)
+		// --- Case 1: Phase/Enable mode (Locked Anti-Phase) ---
+		// Logic: No direction pin defined. 0% speed is mapped to 50% duty cycle.
+		// Formula: duty = max_duty * ((speed + 100) / 200)
 	if (!_dirPin.has_value()) {
-		uint32_t duty = (uint32_t)round(_pwmMaxDuty * ((speed + MAX_SPEED) / (MAX_SPEED * 2.0f)));
+		uint32_t duty = (uint32_t)round(_pwmMaxDuty * ((speed + MaxSpeed) / (MaxSpeed * 2.0f)));
 		
 		DPRINT("DcMotorCore: PH/EN duty calculation: "); DPRINTLN(duty);
 		return duty;
 	}
 
 		// --- Case 2 & 3: Unidirectional or Speed/Dir mode ---
+		// Logic: Direction is handled by a pin or ignored. PWM represents magnitude.
 		// Formula: duty = max_duty * (abs(speed) / 100)
 	float absSpeed = (speed < 0.0f) ? -speed : speed;
-	uint32_t duty = (uint32_t)round(_pwmMaxDuty * (absSpeed / MAX_SPEED));
+	uint32_t duty = (uint32_t)round(_pwmMaxDuty * (absSpeed / MaxSpeed));
 
 	DPRINT("DcMotorCore: Standard duty calculation: "); DPRINTLN(duty);
 	return duty;
@@ -797,7 +880,7 @@ float DcMotorCore::dutyToSpeed(uint32_t duty) {
 		// Logic: No direction pin defined. Duty cycle 50% maps back to 0% speed.
 		// Formula: speed = (((duty * 2) - max_duty) / max_duty) * 100
 	if (!_dirPin.has_value()) {
-		float speed = (((((float)duty * 2.0f) - _pwmMaxDuty) / _pwmMaxDuty) * MAX_SPEED);
+		float speed = (((((float)duty * 2.0f) - _pwmMaxDuty) / _pwmMaxDuty) * MaxSpeed);
 		
 		DPRINT("DcMotorCore: PH/EN speed conversion: "); DPRINTLN(speed);
 		return speed;
@@ -806,7 +889,7 @@ float DcMotorCore::dutyToSpeed(uint32_t duty) {
 		// --- Case 2 & 3: Unidirectional or Speed/Dir mode ---
 		// Logic: Duty cycle is a direct magnitude (0 to 100%).
 		// Formula: speed = (duty / max_duty) * 100
-	float speed = (((float)duty / _pwmMaxDuty) * MAX_SPEED);
+	float speed = (((float)duty / _pwmMaxDuty) * MaxSpeed);
 
 	DPRINT("DcMotorCore: Standard speed conversion: "); DPRINTLN(speed);
 	return speed;
@@ -820,13 +903,13 @@ float DcMotorCore::dutyToSpeed(uint32_t duty) {
  * @details This linear mapping ensures the motor starts at _minMargin 
  *          and reaches its limit at _maxMargin.
  * 
- * @param speed Input speed from 0.0 to 100.0 (or negative)
+ * @param speed Input speed from MinSpeed to MaxSpeed (or negative)
  * @return float Mapped speed ready for PWM conversion
  */
 
 float DcMotorCore::speedInMargin(float speed) {
 		// --- 1. Pass-through if no margins are set or speed is zero ---
-	if (!_marginAreSet || speed == 0.0f) {
+	if (!_marginAreSet || speed == MinSpeed) {
 		return speed;
 	}
 
@@ -835,8 +918,8 @@ float DcMotorCore::speedInMargin(float speed) {
 	float absSpeed = isNegative ? -speed : speed;
 
 		// --- 3. Linear Mapping (float precision) ---
-		// Formula: min + (input * (max - min) / 100)
-	float mapped = _minMargin + (absSpeed * (_maxMargin - _minMargin) / 100.0f);
+		// Formula: min + (input * (max - min) / MaxSpeed)
+	float mapped = _minMargin + (absSpeed * (_maxMargin - _minMargin) / MaxSpeed);
 
 		// --- 4. Safety Clamping ---
 	if (mapped > _maxMargin) mapped = _maxMargin;
@@ -850,25 +933,26 @@ float DcMotorCore::speedInMargin(float speed) {
  * @brief Reverts a physical speed (with margins) back to its normalized 0-100% value.
  * 
  * @param speed Mapped speed from PWM duty cycle
- * @return float Normalized speed (0.0 to 100.0)
+ * @return float Normalized speed (MinSpeed to MaxSpeed)
  */
 
 float DcMotorCore::revertMargedSpeed(float speed) {
-		// --- 1. Pass-through if no margins or speed is zero ---
-	if (!_marginAreSet || speed == 0.0f) {
+		// --- 1. Pass-through if no margins or speed is at minimum ---
+	if (!_marginAreSet || speed == MinSpeed) {
 		return speed;
 	}
 
+		// --- 2. Store direction and work with absolute value ---
 	bool isNegative = (speed < 0.0f);
 	float absSpeed = isNegative ? -speed : speed;
 
-		// --- 2. Inverse Linear Mapping ---
-		// Formula: (absSpeed - min) * 100 / (max - min)
-	float normalized = (absSpeed - _minMargin) * 100.0f / (_maxMargin - _minMargin);
+		// --- 3. Inverse Linear Mapping (float precision) ---
+		// Formula: (absSpeed - min) * MaxSpeed / (max - min)
+	float normalized = (absSpeed - _minMargin) * MaxSpeed / (_maxMargin - _minMargin);
 
-		// --- 3. Clamping for telemetry safety ---
-	if (normalized < 0.0f) normalized = 0.0f;
-	if (normalized > 100.0f) normalized = 100.0f;
+		// --- 4. Clamping for telemetry safety ---
+	if (normalized < MinSpeed) normalized = MinSpeed;
+	if (normalized > MaxSpeed) normalized = MaxSpeed;
 
 	return isNegative ? -normalized : normalized;
 }
@@ -879,22 +963,21 @@ float DcMotorCore::revertMargedSpeed(float speed) {
  * @brief Set the physical direction pin state based on speed value.
  */
 bool DcMotorCore::dirPinFromSpeed(float speed) {
-	// --- 1. Check if a direction pin is defined (Speed/Dir mode) ---
+		// --- 1. Check if a direction pin is defined ---
+		// If nullopt (PH/EN) or -1 (Unidirectional), we exit without action
 	if (!_dirPin.has_value() || _dirPin.value() == -1) {
-		DPRINTLN("DcMotorCore: No direction pin defined for current mode.");
 		return false;
 	}
 
-	// --- 2. Set direction pin according to speed sign ---
-	if (speed >= 0.0f) {
-		// Set clockwise for positive and zero speed value
-		digitalWrite(_dirPin.value(), CLOCKWISE);
-		DPRINTLN("DcMotorCore: Direction pin set to CLOCKWISE.");
+		// --- 2. Set physical state based on CEI standard ---
+		// Positive speed (CW) = HIGH, Negative speed (CCW) = LOW
+	if (speed >= MinSpeed) {
+		digitalWrite(_dirPin.value(), HIGH);
+		DPRINTLN("    -> Direction pin set to HIGH (CW/Positive).");
 	} 
 	else {
-		// Set counter-clockwise for negative speed value
-		digitalWrite(_dirPin.value(), COUNTERCLOCKWISE);
-		DPRINTLN("DcMotorCore: Direction pin set to COUNTERCLOCKWISE.");
+		digitalWrite(_dirPin.value(), LOW);
+		DPRINTLN("    -> Direction pin set to LOW (CCW/Negative).");
 	}
 
 	return true;
@@ -903,15 +986,22 @@ bool DcMotorCore::dirPinFromSpeed(float speed) {
 
 
 /**
- * @brief Verify if a pin is safe and capable of output
+ * @brief Verify if a GPIO pin is safe and capable of output.
  */
-
 bool DcMotorCore::isSafeOutput(uint8_t pin) {
-	// --- 1. Check if hardware supports output (exclude 34-39) ---
-	if (!GPIO_IS_VALID_OUTPUT_GPIO(pin)) return false;
+		// --- 1. Hardware capability check ---
+		// Excludes input-only pins (like 34-39) based on ESP32 variant
+	if (!GPIO_IS_VALID_OUTPUT_GPIO(pin)) {
+		DPRINT("DcMotorCore: Pin "); DPRINT(pin); DPRINTLN(" is NOT a valid output.");
+		return false;
+	}
 
-	// --- 2. Exclude SPI Flash pins (6 to 11) ---
-	if (pin >= 6 && pin <= 11) return false;
+		// --- 2. SPI Flash protection ---
+		// Excludes pins 6 to 11 to prevent system crash
+	if (pin >= 6 && pin <= 11) {
+		DPRINT("DcMotorCore: Pin "); DPRINT(pin); DPRINTLN(" is reserved for SPI Flash.");
+		return false;
+	}
 
 	return true;
 }
@@ -920,24 +1010,31 @@ bool DcMotorCore::isSafeOutput(uint8_t pin) {
 
 
 /**
- * @brief Verify if an ActiveLevel value is within valid range
+ * @brief Verify if an ActiveLevel value is within valid range.
  */
-
 bool DcMotorCore::isValidActiveLevel(ActiveLevel mode) {
+		// Only allow explicit ActiveLow or ActiveHigh states
 	return (mode == ActiveLevel::ActiveLow || mode == ActiveLevel::ActiveHigh);
 }
 
 
-/////////////////////////////////////////////////////////////////////////////////////
-/*	espSilentLog(...) - read number of character write durring esp_log msg
-										                                           */
-/////////////////////////////////////////////////////////////////////////////////////
-int DcMotorCore::espSilentLog(const char* string, va_list args)
-{		// store number of character into "string"
-	_logHasOccure = vsnprintf(NULL, 0, string, args);
 
-	return vprintf("coucou", args);
+/**
+ * @brief Silent log redirection to detect ESP32 hardware driver errors.
+ * 
+ * @details This helper captures the length of error messages generated by 
+ *          the ESP-IDF driver to validate PWM configuration.
+ */
+int DcMotorCore::espSilentLog(const char* string, va_list args) {
+		// --- 1. Capture log length ---
+		// We use vsnprintf with NULL to get the size of the message without printing it
+	_logHasOccured = vsnprintf(nullptr, 0, string, args);
+
+		// --- 2. Silent return ---
+		// We return 0 to indicate a "virtual" successful print
+	return 0;
 }
+
 
 
 /* destructor:

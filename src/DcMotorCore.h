@@ -40,14 +40,10 @@
 // =============================================================================
 
 	// --- 1. Functional Constants ---
-#define DEF_PWM_FREQ    400
-#define NOT_SET         -1
+static constexpr uint32_t DefaultPwmFreq = 400;
+static constexpr float    MinSpeed       = 0.0f;
+static constexpr float    MaxSpeed       = 100.0f;
 
-#define CLOCKWISE       0
-#define COUNTERCLOCKWISE 1
-
-static constexpr float MIN_SPEED = 0.00f;
-static constexpr float MAX_SPEED = 100.00f;
 
 	/**
 	 * @brief Motor driver control interface type
@@ -68,13 +64,16 @@ public:
 	// --- 1. Hardware Assignment ---
 	bool useTimer(int8_t timer);
 	bool useChannel(int8_t channel);
-	bool attach(uint8_t pwmPin, std::optional<int8_t> dirPin = std::nullopt, uint32_t pwmFreq = DEF_PWM_FREQ);
+	bool setPwmFreq(uint32_t frequency);
+	
+	bool attach(uint8_t pwmPin, std::optional<int8_t> dirPin = std::nullopt);
 
 	// --- 2. Driver Configuration ---
 	bool setEnablePin(uint8_t enablePin, ActiveLevel mode);
 	bool setDecayPin(uint8_t decayPin, DecayMode lowState, DecayMode highState);
 	bool setSleepPin(uint8_t sleepPin, ActiveLevel mode);
-	bool setMargin(float minMargin = MIN_SPEED, float maxMargin = MAX_SPEED);
+	bool setMargin(float minMargin = MinSpeed, float maxMargin = MaxSpeed);
+	void setInverted(bool invert);
 
 	// --- 3. Motion Control ---
 	bool runAtSpeed(float speed);
@@ -89,12 +88,13 @@ public:
 	bool decayMode(DecayMode mode);
 
 	// --- 5. Telemetry and Getters ---
-	float    getSpeed();
-	bool     isMoving();
-	bool     isSleeping();
-	int8_t   getPwmTimer();
-	uint32_t getPwmFreq();
-	uint32_t getMaxDutyVal();
+	float      getSpeed();
+	bool       isMoving();
+	bool       isSleeping();
+	DecayMode  getDecayMode();
+	int8_t     getPwmTimer();
+	uint32_t   getPwmFreq();
+	uint32_t   getMaxDutyVal();
 
 private:
 	// --- 1. Static Resource Management (Architecture specific) ---
@@ -105,26 +105,29 @@ private:
 
 	// --- 2. Instance Hardware Config ---
 	ledc_channel_config_t* _ledc_channel_config = nullptr;
-	std::optional<int8_t> _dirPin;
+	uint32_t 							 _pwmFreq = DefaultPwmFreq;
+	std::optional<int8_t>  _dirPin;
 	std::optional<int8_t>  _enablePin;
 	std::optional<int8_t>  _decayPin;
 	std::optional<int8_t>  _sleepPin;
 
 	// --- 3. Active Levels (Polarity) ---
-	ActiveLevel _enablePinMode = ActiveLevel::ActiveHigh;
-	ActiveLevel _sleepPinMode  = ActiveLevel::ActiveHigh;
-	DecayMode _lowDecayPinMode = DecayMode::Unset; // Ce qui active le freinage
-	DecayMode _highDecayPinMode = DecayMode::Unset;  // Ce qui active la roue libre
+	ActiveLevel _enablePinMode    = ActiveLevel::ActiveHigh;
+	ActiveLevel _sleepPinMode     = ActiveLevel::ActiveHigh;
+	DecayMode   _decayLowPinMode  = DecayMode::Unset; // Ce qui active le freinage
+	DecayMode   _decayHighPinMode = DecayMode::Unset;  // Ce qui active la roue libre
 
 	// --- 4. Motion Properties ---
-	float       _minMargin      = MIN_SPEED;
-	float       _maxMargin      = MAX_SPEED;
+	bool 				_isInverted 		= false;    // Default: CEI standard (Positive = CW)
+	float       _minMargin      = MinSpeed;
+	float       _maxMargin      = MaxSpeed;
 	bool        _marginAreSet   = false;
 	uint32_t    _accel_factor   = 0;
+	
 
 	// --- 5. Internal PWM Properties ---
-	int8_t      _pwmTimer       = NOT_SET;
-	int8_t      _pwmChannel     = NOT_SET;
+	int8_t      _pwmTimer       = -1;
+	int8_t      _pwmChannel     = -1;
 	uint32_t    _pwmMaxDuty     = 0;
 
 	// --- 6. Internal Helpers ---
@@ -135,6 +138,7 @@ private:
 	float    speedInMargin(float speed);
 	float    revertMargedSpeed(float speed);
 	bool     dirPinFromSpeed(float speed);
+	inline bool isAttached() const { return _ledc_channel_config != nullptr; }
 
 	// --- 7. Input parameters validations ---
 	bool isSafeOutput(uint8_t pin);
