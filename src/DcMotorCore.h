@@ -12,7 +12,9 @@
 
 #include <Arduino.h>
 #include <optional>
+#include <memory>
 #include <driver/ledc.h>
+#include <PwmControl.h>
 #include <pin_defs.h> // Shared definitions library
 
 // =============================================================================
@@ -21,7 +23,7 @@
 
 	// --- 1. Architecture Guard ---
 	// Currently restricted to Esp32 due to LEDC driver dependency.
-#if !defined(Esp32)
+#if !defined(ARDUINO_ARCH_ESP32) && !defined(ESP32)
 	#error "DcMotorCore currently requires Esp32 LEDC hardware PWM."
 #endif
 
@@ -60,6 +62,7 @@ enum class DriverControlMode : uint8_t {
 class DcMotorCore {
 public:
 	DcMotorCore();
+	~DcMotorCore();
 
 	// --- 1. Hardware Assignment ---
 	bool useTimer(int8_t timer);
@@ -104,7 +107,7 @@ private:
 	static bool                 _pwm_channel_used[LEDC_CHANNEL_MAX];
 
 	// --- 2. Instance Hardware Config ---
-	ledc_channel_config_t* _ledc_channel_config = nullptr;
+	std::unique_ptr<PwmControl> _pwmControl = nullptr;
 	uint32_t 							 _pwmFreq = DefaultPwmFreq;
 	std::optional<int8_t>  _dirPin;
 	std::optional<int8_t>  _enablePin;
@@ -138,7 +141,7 @@ private:
 	float    speedInMargin(float speed);
 	float    revertMargedSpeed(float speed);
 	bool     dirPinFromSpeed(float speed);
-	inline bool isAttached() const { return _ledc_channel_config != nullptr; }
+	inline bool isAttached() const { return _pwmControl != nullptr; }
 
 	// --- 7. Input parameters validations ---
 	bool isSafeOutput(uint8_t pin);

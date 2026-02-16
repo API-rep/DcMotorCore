@@ -3,6 +3,7 @@
  * @brief Implementation of the universal DC motor controller.
  ******************************************************************************/
 #include "DcMotorCore.h"
+#include <PwmBroker.h>
 
 #include <Arduino.h>
 #include <driver/ledc.h>
@@ -31,6 +32,16 @@ int		DcMotorCore::_logHasOccured = -1;					// init espErr char counter attribute
 DcMotorCore::DcMotorCore()
 {
 
+}
+
+DcMotorCore::~DcMotorCore() {
+	if (isAttached()) {
+		stop();
+		_pwmControl.reset();
+		_pwmTimer = -1;
+		_pwmChannel = -1;
+		_pwmMaxDuty = 0;
+	}
 }
 
 
@@ -131,104 +142,28 @@ bool DcMotorCore::attach(uint8_t pwmPin, std::optional<int8_t> dirPin) {
 		// --- 3. PWM Pin Validation ---
 	if (!isSafeOutput(pwmPin)) return false;
 
-		// --- 4. Resource Allocation ---
-	DPRINTLN("DcMotorCore: Setting up PWM signal generator...");
+		// --- 4. Resource Allocation through Broker ---
+	DPRINTLN("DcMotorCore: Requesting PWM resource from Broker...");
+	_pwmControl = PwmBroker::getInstance().requestResource(pwmPin, _pwmFreq);
 
-		// Setup PWM timer if not previously configured before attach()
-	if (_pwmTimer == -1) {
-		DPRINTLN("    -> Searching for a suitable PWM timer...");
-		
-			// 1. First, look for a timer already running at the requested frequency
-		for (uint8_t t = 0; t < LEDC_TIMER_MAX; t++) {
-			if (_timers_config[t] != nullptr && _timers_config[t]->freq_hz == _pwmFreq) {
-				_pwmTimer = t;
-				DPRINT("    -> Found existing timer "); DPRINT(_pwmTimer); DPRINTLN(" with matching frequency.");
-				break;
-			}
-		}
-
-			// 2. If no matching frequency, find the first totally free timer
-		if (_pwmTimer == -1) {
-			for (uint8_t t = 0; t < LEDC_TIMER_MAX; t++) {
-				if (_clients_for_timer[t] == 0) {
-					_pwmTimer = t;
-					DPRINT("    -> Timer "); DPRINT(_pwmTimer); DPRINTLN(" is free. Selecting it.");
-					break;
-				}
-			}
-		}
-
-			// 3. Exit if no timers are available
-		if (_pwmTimer == -1) {
-			DPRINTLN("    -> Error: No free PWM timer available.");
-			return false;
-		}
-		
-			// 4. Create and configure hardware timer if it's new for this instance
-		if (_timers_config[_pwmTimer] == nullptr) {
-			DPRINT("    -> Configuring new hardware timer "); DPRINTLN(_pwmTimer);
-			_timers_config[_pwmTimer] = new ledc_timer_config_t;
-			
-			_timers_config[_pwmTimer]->speed_mode    = LEDC_LOW_SPEED_MODE;
-			_timers_config[_pwmTimer]->freq_hz       = _pwmFreq; 
-			_timers_config[_pwmTimer]->timer_num     = (ledc_timer_t)_pwmTimer;
-			_timers_config[_pwmTimer]->clk_cfg       = LEDC_AUTO_CLK;
-
-				// Automatic Resolution Detection
-			uint8_t resBit = LEDC_TIMER_BIT_MAX;
-			esp_log_set_vprintf(&DcMotorCore::espSilentLog);
-
-			while (resBit > 0) {
-				_logHasOccured = 0; 
-				_timers_config[_pwmTimer]->duty_resolution = (ledc_timer_bit_t)resBit;
-				if (ledc_timer_config(_timers_config[_pwmTimer]) == ESP_OK && _logHasOccured == 0) break; 
-				resBit--;
-			}
-			
-			DPRINT("    -> Auto-resolution set to: "); DPRINT((int)resBit); DPRINTLN(" bits.");
-			esp_log_set_vprintf(&vprintf); 
-
-			if (resBit <= 0) {
-				DPRINTLN("    -> Error: Failed to find valid PWM resolution.");
-				delete _timers_config[_pwmTimer];
-				_timers_config[_pwmTimer] = nullptr;
-				return false;
-			}
-		}
+	if (!_pwmControl) {
+		DPRINTLN("    -> Error: Broker could not allocate PWM resource.");
+		return false;
 	}
 
-		// --- 5. Channel Configuration ---
-	if (_pwmChannel == -1) {
-		for (uint8_t c = 0; c < LEDC_CHANNEL_MAX; c++) {
-			if (!_pwm_channel_used[c]) {
-				_pwm_channel_used[c] = true;
-				_pwmChannel = c;
-				DPRINT("    -> Auto-selected PWM channel "); DPRINTLN(_pwmChannel);
-				break;
-			}
-			if (c == (LEDC_CHANNEL_MAX - 1)) {
-				DPRINTLN("    -> Error: No free PWM channel available.");
-				return false;
-			}
-		}
+	_pwmChannel = _pwmControl->getChannel();
+	_pwmTimer = _pwmControl->getTimer();
+	_pwmFreq = _pwmControl->getFrequency();
+	_pwmMaxDuty = _pwmControl->getMaxDuty();
+
+	if (_pwmChannel < 0 || _pwmTimer < 0 || _pwmMaxDuty == 0) {
+		DPRINTLN("    -> Error: Broker returned an invalid PWM handle.");
+		_pwmControl.reset();
+		return false;
 	}
-
-	_ledc_channel_config = new ledc_channel_config_t;
-	_ledc_channel_config->channel         = (ledc_channel_t)_pwmChannel;
-	_ledc_channel_config->duty            = 0;
-	_ledc_channel_config->hpoint          = 0;
-	_ledc_channel_config->gpio_num        = pwmPin;
-	_ledc_channel_config->speed_mode      = LEDC_LOW_SPEED_MODE;
-	_ledc_channel_config->timer_sel       = (ledc_timer_t)_pwmTimer;
-	_ledc_channel_config->intr_type       = LEDC_INTR_DISABLE;
-	_ledc_channel_config->flags.output_invert = 0;
-
-	if (ledc_channel_config(_ledc_channel_config) != ESP_OK) return false;
 
 		// --- 6. Finalize Instance ---
-	_clients_for_timer[_pwmTimer]++;
 	ledc_fade_func_install(0);
-	_pwmMaxDuty = getMaxDutyVal();
 
 	uint32_t neutralDuty = speedToDuty(MinSpeed); // MinSpeed est 0.0f
   ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel, neutralDuty, 0);
@@ -446,8 +381,7 @@ bool DcMotorCore::runAtSpeed(float speed) {
 		uint32_t duty = speedToDuty(mappedSpeed);
 
 			// --- 6. Hardware Update ---
-			// We use LEDC_LOW_SPEED_MODE for maximum compatibility across Esp32 variants
-		if (ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel, duty, 0) == ESP_OK) {
+			if (_pwmControl && _pwmControl->setDuty(duty)) {
 			return true;
 		}
 	}
@@ -676,14 +610,14 @@ bool DcMotorCore::wakeup() {
  */
 float DcMotorCore::getSpeed() {
 		// --- 1. Safety check ---
-	if (_ledc_channel_config == nullptr || _pwmTimer == -1) {
+	if (!isAttached() || _pwmTimer == -1) {
 		DPRINTLN("DcMotorCore Error: getSpeed() called before attach() or timer init.");
 		return 0.0f;
 	}
 
 		// --- 2. Get raw speed from hardware duty cycle ---
 		// Direct hardware query to get current PWM duty
-	uint32_t currentDuty = ledc_get_duty(LEDC_LOW_SPEED_MODE, _ledc_channel_config->channel);
+	uint32_t currentDuty = _pwmControl->getDuty();
 	float speed = dutyToSpeed(currentDuty);
 	
 	DPRINT("DcMotorCore: Raw speed from duty cycle: "); DPRINTLN(speed);
@@ -751,8 +685,8 @@ bool DcMotorCore::isSleeping() {
  */
 int8_t DcMotorCore::getPwmTimer() {
 		// --- 1. Check hardware configuration state ---
-	if (_ledc_channel_config != nullptr) {
-		return (int8_t)_ledc_channel_config->timer_sel;
+	if (isAttached()) {
+		return _pwmTimer;
 	}
 
 		// --- 2. Return -1 if not configured ---
@@ -768,12 +702,12 @@ int8_t DcMotorCore::getPwmTimer() {
  */
 uint32_t DcMotorCore::getPwmFreq() {
 		// --- 1. Check if PWM is configured ---
-	if (_ledc_channel_config != nullptr && _pwmTimer != -1) {
-		return ledc_get_freq(LEDC_LOW_SPEED_MODE, (ledc_timer_t)_pwmTimer);
+	if (isAttached()) {
+		return _pwmControl->getFrequency();
 	}
 
 		// --- 2. Return error code if not configured ---
-	return false;
+	return 0xFFFFFFFF;
 }
 
 
@@ -784,11 +718,8 @@ uint32_t DcMotorCore::getPwmFreq() {
  */
 uint32_t DcMotorCore::getMaxDutyVal() {
 		// --- 1. Check if PWM is configured ---
-	if (_ledc_channel_config != nullptr && _pwmTimer != -1) {
-		uint8_t res = _timers_config[_pwmTimer]->duty_resolution;
-		
-		// Logic: 2^res - 1 using bit shifting for performance
-		return (uint32_t)((1 << res) - 1);
+	if (isAttached()) {
+		return _pwmControl->getMaxDuty();
 	}
 
 		// --- 2. Return error code if not configured ---
