@@ -20,9 +20,9 @@
 // =============================================================================
 
 	// --- 1. Architecture Guard ---
-	// Currently restricted to ESP32 due to LEDC driver dependency.
-#if !defined(ESP32)
-	#error "DcMotorCore currently requires ESP32 LEDC hardware PWM."
+	// Currently restricted to Esp32 due to LEDC driver dependency.
+#if !defined(Esp32)
+	#error "DcMotorCore currently requires Esp32 LEDC hardware PWM."
 #endif
 
 	// --- 2. Debug Macros ---
