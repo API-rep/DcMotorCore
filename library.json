@@ -14,7 +14,8 @@
         }
     ],
     "dependencies": {
-        "common_defs": "https://github.com/API-rep/common_defs.git"
+        "common_defs": "https://github.com/API-rep/common_defs.git",
+        "PwmBroker": "*"
     },
     "build": {
         "includeDir": "src"

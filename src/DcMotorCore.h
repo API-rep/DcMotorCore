@@ -100,13 +100,7 @@ public:
 	uint32_t   getMaxDutyVal();
 
 private:
-	// --- 1. Static Resource Management (Architecture specific) ---
-	static ledc_timer_config_t* _timers_config[LEDC_TIMER_MAX];
-	static uint8_t              _clients_for_timer[LEDC_TIMER_MAX];
-	static int8_t               _default_timer;
-	static bool                 _pwm_channel_used[LEDC_CHANNEL_MAX];
-
-	// --- 2. Instance Hardware Config ---
+	// --- 1. Instance Hardware Config ---
 	std::unique_ptr<PwmControl> _pwmControl = nullptr;
 	uint32_t 							 _pwmFreq = DefaultPwmFreq;
 	std::optional<int8_t>  _dirPin;
@@ -114,13 +108,13 @@ private:
 	std::optional<int8_t>  _decayPin;
 	std::optional<int8_t>  _sleepPin;
 
-	// --- 3. Active Levels (Polarity) ---
+	// --- 2. Active Levels (Polarity) ---
 	ActiveLevel _enablePinMode    = ActiveLevel::ActiveHigh;
 	ActiveLevel _sleepPinMode     = ActiveLevel::ActiveHigh;
 	DecayMode   _decayLowPinMode  = DecayMode::Unset; // Ce qui active le freinage
 	DecayMode   _decayHighPinMode = DecayMode::Unset;  // Ce qui active la roue libre
 
-	// --- 4. Motion Properties ---
+	// --- 3. Motion Properties ---
 	bool 				_isInverted 		= false;    // Default: CEI standard (Positive = CW)
 	float       _minMargin      = MinSpeed;
 	float       _maxMargin      = MaxSpeed;
@@ -128,12 +122,12 @@ private:
 	uint32_t    _accel_factor   = 0;
 	
 
-	// --- 5. Internal PWM Properties ---
+	// --- 4. Internal PWM Properties ---
 	int8_t      _pwmTimer       = -1;
 	int8_t      _pwmChannel     = -1;
 	uint32_t    _pwmMaxDuty     = 0;
 
-	// --- 6. Internal Helpers ---
+	// --- 5. Internal Helpers ---
 	bool     accelIsValid(uint32_t accel);
 	bool     speedIsValid(float speed);
 	uint32_t speedToDuty(float speed);
@@ -143,12 +137,9 @@ private:
 	bool     dirPinFromSpeed(float speed);
 	inline bool isAttached() const { return _pwmControl != nullptr; }
 
-	// --- 7. Input parameters validations ---
+	// --- 6. Input parameters validations ---
 	bool isSafeOutput(uint8_t pin);
 	bool isValidActiveLevel(ActiveLevel mode);
-
-	static int  espSilentLog(const char* string, va_list args);
-	static int  _logHasOccured;
 };
 
 // EOF DcMotorCore.h
