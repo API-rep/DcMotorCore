@@ -20,6 +20,56 @@ uint32_t modeStartedAt = 0;
 uint32_t lastActionAt = 0;
 uint32_t modeDurationMs = 12000;
 
+float rcCurrentCommand = 0.0f;
+float rcTargetCommand = 0.0f;
+int8_t rcSign = 1;
+uint8_t rcTicksBeforeTargetRefresh = 0;
+
+void ensureDriveReady() {
+    motor.wakeup();
+    motor.enable();
+}
+
+float clampSpeed(float value) {
+    if (value > 100.0f) return 100.0f;
+    if (value < -100.0f) return -100.0f;
+    return value;
+}
+
+void refreshRcTarget(float maxAbsTarget, float maxStep, uint8_t signFlipProbabilityPct) {
+    if (rcTicksBeforeTargetRefresh > 0) {
+        rcTicksBeforeTargetRefresh--;
+        return;
+    }
+
+    rcTicksBeforeTargetRefresh = (uint8_t)random(3, 10);
+
+    if (random(0, 100) < signFlipProbabilityPct) {
+        rcSign = -rcSign;
+        rcTargetCommand = 0.0f;
+        return;
+    }
+
+    float localTarget = (float)random(80, (int)(maxAbsTarget * 10.0f) + 1) / 10.0f;
+    if (random(0, 100) < 20) {
+        localTarget = 0.0f;
+    }
+
+    float signedTarget = localTarget * (float)rcSign;
+    float delta = signedTarget - rcTargetCommand;
+    if (delta > maxStep) delta = maxStep;
+    if (delta < -maxStep) delta = -maxStep;
+    rcTargetCommand = clampSpeed(rcTargetCommand + delta);
+}
+
+float computeNextRcCommand(float maxSlewPerTick) {
+    float delta = rcTargetCommand - rcCurrentCommand;
+    if (delta > maxSlewPerTick) delta = maxSlewPerTick;
+    if (delta < -maxSlewPerTick) delta = -maxSlewPerTick;
+    rcCurrentCommand = clampSpeed(rcCurrentCommand + delta);
+    return rcCurrentCommand;
+}
+
 const char* modeName(TestMode mode) {
     switch (mode) {
         case TestMode::Stability: return "STABILITY";
@@ -37,6 +87,10 @@ void switchToMode(TestMode mode) {
     Serial.println("\n================================================");
     Serial.print("[MODE] "); Serial.println(modeName(mode));
     Serial.println("================================================");
+
+    if (mode != TestMode::PowerCycle) {
+        ensureDriveReady();
+    }
 }
 
 void nextMode() {
@@ -46,31 +100,37 @@ void nextMode() {
 }
 
 void runStabilityMode() {
-    if (millis() - lastActionAt < 350) return;
+    if (millis() - lastActionAt < 120) return;
     lastActionAt = millis();
 
-    float target = (float)random(-1000, 1001) / 10.0f;
-    bool ok = motor.runAtSpeed(target);
+    ensureDriveReady();
+    refreshRcTarget(55.0f, 10.0f, 5);
+    float command = computeNextRcCommand(3.0f);
+    bool ok = motor.runAtSpeed(command);
 
-    Serial.print("[STAB] target="); Serial.print(target, 1);
+    Serial.print("[STAB] cmd="); Serial.print(command, 1);
+    Serial.print(" | target="); Serial.print(rcTargetCommand, 1);
     Serial.print(" | ok="); Serial.print(ok ? "YES" : "NO");
     Serial.print(" | read="); Serial.println(motor.getSpeed(), 1);
 }
 
 void runAggressiveRampMode() {
-    if (millis() - lastActionAt < 1400) return;
+    if (millis() - lastActionAt < 700) return;
     lastActionAt = millis();
 
-    float target = (float)random(-1000, 1001) / 10.0f;
-    uint32_t accel = (uint32_t)random(5, 90);
-    bool rampOk = motor.accelToSpeed(target, accel);
+    ensureDriveReady();
+    refreshRcTarget(90.0f, 20.0f, 12);
+    float command = computeNextRcCommand(8.0f);
+    uint32_t accel = (uint32_t)random(10, 45);
+    bool rampOk = motor.accelToSpeed(command, accel);
 
-    Serial.print("[RAMP] target="); Serial.print(target, 1);
+    Serial.print("[RAMP] cmd="); Serial.print(command, 1);
+    Serial.print(" | target="); Serial.print(rcTargetCommand, 1);
     Serial.print(" | accel="); Serial.print(accel);
     Serial.print(" | rampOk="); Serial.println(rampOk ? "YES" : "NO");
 
-    if (random(0, 100) < 40) {
-        float interruptTarget = (float)random(-1000, 1001) / 10.0f;
+    if (random(0, 100) < 25) {
+        float interruptTarget = computeNextRcCommand(10.0f);
         bool interruptOk = motor.runAtSpeed(interruptTarget);
         Serial.print("[RAMP-INT] target="); Serial.print(interruptTarget, 1);
         Serial.print(" | ok="); Serial.println(interruptOk ? "YES" : "NO");
@@ -80,6 +140,8 @@ void runAggressiveRampMode() {
 void runSafetyLocksMode() {
     if (millis() - lastActionAt < 1800) return;
     lastActionAt = millis();
+
+    ensureDriveReady();
 
     bool marginLocked = !motor.setMargin(0.0f, 100.0f);
     bool freqLocked = !motor.setPwmFreq(20000);
@@ -117,7 +179,9 @@ void runPowerCycleMode() {
             motor.enable();
             break;
         default: {
-            float target = (float)random(-1000, 1001) / 10.0f;
+            ensureDriveReady();
+            refreshRcTarget(45.0f, 8.0f, 8);
+            float target = computeNextRcCommand(5.0f);
             Serial.print("[PWR] runAtSpeed("); Serial.print(target, 1); Serial.println(")");
             motor.runAtSpeed(target);
             break;
