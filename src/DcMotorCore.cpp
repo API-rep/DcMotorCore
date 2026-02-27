@@ -151,7 +151,14 @@ bool DcMotorCore::attach(uint8_t pwmPin, std::optional<int8_t> dirPin) {
 	}
 
 		// --- 6. Finalize Instance ---
-	ledc_fade_func_install(0);
+	static bool ledcFadeFuncIsInstalled = false;
+	
+	if (!ledcFadeFuncIsInstalled) {
+		esp_err_t ledcInstallResult = ledc_fade_func_install(0);
+		if (ledcInstallResult == ESP_OK || ledcInstallResult == ESP_ERR_INVALID_STATE) {
+			ledcFadeFuncIsInstalled = true;
+		}
+	}
 
 	uint32_t neutralDuty = speedToDuty(MinSpeed); // MinSpeed est 0.0f
   ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel, neutralDuty, 0);
