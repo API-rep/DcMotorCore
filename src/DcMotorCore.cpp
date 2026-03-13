@@ -592,7 +592,7 @@ bool DcMotorCore::wakeup() {
 	}
 
 		// --- 2. Set pin state to active ---
-	digitalWrite(_sleepPin.value(), (_sleepPinMode == ActiveLevel::ActiveHigh) ? HIGH : LOW);
+	digitalWrite(_sleepPin.value(), (_sleepPinMode == ActiveLevel::ActiveHigh) ? LOW : HIGH);
 	DPRINTLN("DcMotorCore: Driver is now awake.");
 
 	return true;
