@@ -161,12 +161,10 @@ bool DcMotorCore::attach(uint8_t pwmPin, std::optional<int8_t> dirPin) {
 	}
 
 	uint32_t neutralDuty = speedToDuty(MinSpeed); // MinSpeed est 0.0f
-  ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel, neutralDuty, 0);
+  	ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE, (ledc_channel_t)_pwmChannel, neutralDuty, 0);
 
-  DPRINTLN("DcMotorCore: PWM initialized to neutral state.");
-
-	wakeup(); 
-
+  	DPRINTLN("DcMotorCore: PWM initialized to neutral state.");
+	
 	DPRINTLN("DcMotorCore: PWM configuration success.");
 	
 	return true;
