@@ -47,16 +47,16 @@ DcMotorCore::~DcMotorCore() {
  * @param	timer Timer to use for PWM signal (ledc : High speed timer 0-3)
  */
 bool DcMotorCore::useTimer(int8_t timer) {
-		// --- 1. Range validation ---
-	if (timer < 0 || timer >= LEDC_TIMER_MAX) {
-		DPRINTLN("DcMotorCore: Invalid timer index provided.");
-		return false; // SUCRÉ: EXIT_FAILURE remplacé par false
+		// --- 1. Lock check ---
+	if (isAttached()) {
+		DPRINTLN("DcMotorCore Error: Cannot change timer after attach().");
+		return false;
 	}
 
-		// --- 2. Assignment ---
+		// --- 2. Assignment (broker validates at requestResource time) ---
 	_pwmTimer = timer;
 	
-	return true; // SUCRÉ: EXIT_SUCCESS remplacé par true
+	return true;
 }
 
 
@@ -70,13 +70,13 @@ bool DcMotorCore::useTimer(int8_t timer) {
  * @param channel Channel to use for PWM (LEDC: 0-15).
  */
 bool DcMotorCore::useChannel(int8_t channel) {
-		// --- 1. Range validation ---
-	if (channel < 0 || channel >= LEDC_CHANNEL_MAX) {
-		DPRINTLN("DcMotorCore: Invalid channel index provided.");
+		// --- 1. Lock check ---
+	if (isAttached()) {
+		DPRINTLN("DcMotorCore Error: Cannot change channel after attach().");
 		return false;
 	}
 
-		// --- 2. Assignment ---
+		// --- 2. Assignment (broker validates at requestResource time) ---
 	_pwmChannel = channel;
 	
 	return true;
@@ -132,7 +132,7 @@ bool DcMotorCore::attach(uint8_t pwmPin, std::optional<int8_t> dirPin) {
 
 		// --- 4. Resource Allocation through Broker ---
 	DPRINTLN("DcMotorCore: Requesting PWM resource from Broker...");
-	_pwmControl = PwmBroker::getInstance().requestResource(pwmPin, _pwmFreq, PwmModeRequest::LowSpeed);
+	_pwmControl = PwmBroker::getInstance().requestResource(pwmPin, _pwmFreq, PwmModeRequest::LowSpeed, _pwmTimer, _pwmChannel);
 
 	if (!_pwmControl) {
 		DPRINTLN("    -> Error: Broker could not allocate PWM resource.");

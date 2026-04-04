@@ -13,7 +13,6 @@
 #include <Arduino.h>
 #include <optional>
 #include <memory>
-#include <driver/ledc.h>
 #include <PwmControl.h>
 #include <pin_defs.h> // Shared definitions library
 
@@ -41,12 +40,6 @@
 // 2. CONSTANTS AND ENUMERATIONS
 // =============================================================================
 
-	// --- 1. Functional Constants ---
-static constexpr uint32_t DefaultPwmFreq = 400;
-static constexpr float    MinSpeed       = 0.0f;
-static constexpr float    MaxSpeed       = 100.0f;
-
-
 	/**
 	 * @brief Motor driver control interface type
 	 */
@@ -61,43 +54,47 @@ enum class DriverControlMode : uint8_t {
 
 class DcMotorCore {
 public:
+	static constexpr uint32_t DefaultPwmFreq = 400;    ///< Default PWM frequency in Hz.
+	static constexpr float    MinSpeed       = 0.0f;   ///< Minimum (zero) speed, in percent.
+	static constexpr float    MaxSpeed       = 100.0f; ///< Maximum speed, in percent.
+
 	DcMotorCore();
 	~DcMotorCore();
 
 	// --- 1. Hardware Assignment ---
-	bool useTimer(int8_t timer);
-	bool useChannel(int8_t channel);
-	bool setPwmFreq(uint32_t frequency);
-	
-	bool attach(uint8_t pwmPin, std::optional<int8_t> dirPin = std::nullopt);
+	bool useTimer(int8_t timer);                                               ///< Hint the broker to prefer this LEDC timer; must be called before attach().
+	bool useChannel(int8_t channel);                                           ///< Hint the broker to prefer this LEDC channel; must be called before attach().
+	bool setPwmFreq(uint32_t frequency);                                       ///< Set PWM frequency in Hz; must be called before attach().
+	bool attach(uint8_t pwmPin, std::optional<int8_t> dirPin = std::nullopt);  ///< Attach motor to hardware; allocates LEDC resource via PwmBroker.
 
 	// --- 2. Driver Configuration ---
-	bool setEnablePin(uint8_t enablePin, ActiveLevel mode);
-	bool setDecayPin(uint8_t decayPin, DecayMode lowState, DecayMode highState);
-	bool setSleepPin(uint8_t sleepPin, ActiveLevel mode);
-	bool setMargin(float minMargin = MinSpeed, float maxMargin = MaxSpeed);
-	void setInverted(bool invert);
+	bool setEnablePin(uint8_t enablePin, ActiveLevel mode);                        ///< Configure the enable pin and its active level; must be before attach().
+	bool setDecayPin(uint8_t decayPin, DecayMode lowState, DecayMode highState);   ///< Configure the decay pin and its low/high state mapping; must be before attach().
+	bool setSleepPin(uint8_t sleepPin, ActiveLevel mode);                          ///< Configure the sleep pin and its active level; must be before attach().
+	bool setMargin(float minMargin = MinSpeed, float maxMargin = MaxSpeed);        ///< Set speed dead-zone margins in percent; must be before attach().
+	void setInverted(bool invert);                                                 ///< Invert rotation direction relative to CEI convention; must be before attach().
 
 	// --- 3. Motion Control ---
-	bool runAtSpeed(float speed);
-	bool accelToSpeed(float speed, uint32_t accel);
-	void stop();
-	
+	bool runAtSpeed(float speed);                  ///< Set motor speed immediately (-100.0 to 100.0).
+	bool accelToSpeed(float speed, uint32_t accel); ///< Ramp motor speed using hardware PWM fade.
+	void stop();                                   ///< Stop the motor immediately (sets speed to 0).
+
 	// --- 4. Power and State Management ---
-	bool enable();
-	bool disable();
-	bool sleep();
-	bool wakeup();
-	bool decayMode(DecayMode mode);
+	bool enable();                  ///< Assert the enable pin (driver active).
+	bool disable();                 ///< De-assert the enable pin (driver inactive).
+	bool sleep();                   ///< Assert the sleep pin (driver in low-power state).
+	bool wakeup();                  ///< De-assert the sleep pin (driver active again).
+	bool decayMode(DecayMode mode); ///< Set the decay mode via the decay pin.
 
 	// --- 5. Telemetry and Getters ---
-	float      getSpeed();
-	bool       isMoving();
-	bool       isSleeping();
-	DecayMode  getDecayMode();
-	int8_t     getPwmTimer();
-	uint32_t   getPwmFreq();
-	uint32_t   getMaxDutyVal();
+	float      getSpeed();         ///< Return current speed with direction (+CW / -CCW).
+	bool       isMoving();         ///< Return true if current speed is non-zero.
+	bool       isSleeping();       ///< Return true if the sleep pin is asserted.
+	DecayMode  getDecayMode();     ///< Return the current decay mode from the physical pin state.
+	int8_t     getPwmTimer();      ///< Return the LEDC timer index, or -1 if not attached.
+	uint32_t   getPwmFreq();       ///< Return PWM frequency in Hz, or 0xFFFFFFFF if not attached.
+	uint32_t   getMaxDutyVal();    ///< Return maximum PWM duty cycle value based on resolution.
+	bool       isAttached() const { return _pwmControl != nullptr; } ///< Return true if the PWM resource is acquired and active.
 
 private:
 	// --- 1. Instance Hardware Config ---
@@ -135,7 +132,6 @@ private:
 	float    speedInMargin(float speed);
 	float    revertMargedSpeed(float speed);
 	bool     dirPinFromSpeed(float speed);
-	inline bool isAttached() const { return _pwmControl != nullptr; }
 
 	// --- 6. Input parameters validations ---
 	bool isSafeOutput(uint8_t pin);
